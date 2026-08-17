@@ -1,0 +1,5 @@
+{"timestamp":"2026-08-01T10:00:00.000Z","type":"session_meta","payload":{"session_id":"019e0000-0000-0000-0000-000000000001","id":"019e0000-0000-0000-0000-000000000001","timestamp":"2026-08-01T10:00:00.000Z","cwd":"/tmp/fixture-proj","originator":"Codex CLI","cli_version":"0.148.0","source":"cli","thread_source":"user","model_provider":"openai","base_instructions":{},"history_mode":"legacy","context_window":950000}}
+{"timestamp":"2026-08-01T10:00:01.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1","started_at":"1786934920","model_context_window":950000}}
+{"timestamp":"2026-08-01T10:00:02.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"把 OAuth 回调改成 PKCE 流程"}]}}
+{"timestamp":"2026-08-01T10:00:03.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"我先读一下现有代码"}]}}
+{"timestamp":"2026-08-01T10:00:04.000Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"t1","completed_at":"1786934924"}}

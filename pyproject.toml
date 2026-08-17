@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cross-agent-fork"
+version = "0.2.0"
+description = "跨 agent 会话 fork：在主流 agent 之间整会话搬运，原会话不动"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "cross-agent-fork contributors" }]
+
+[project.scripts]
+caf = "caf.cli:main"
+
+[tool.setuptools]
+packages = ["caf", "caf.adapters", "caf.plugins"]
