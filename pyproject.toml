@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "cross-agent-fork"
 version = "0.2.0"
-description = "跨 agent 会话 fork：在主流 agent 之间整会话搬运，原会话不动"
+description = "Cross-agent session fork: take a whole session from one agent and continue it in another (Claude Code / Codex / DeepSeek Harness), original untouched"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
