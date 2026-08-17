@@ -28,11 +28,8 @@ caf doctor
 
 ## After a fork
 
-1. Show the output, highlight the final `-> resume:` line.
-2. Execute it yourself: an `open http://...` line (dsh web) is safe to run immediately;
-   interactive CLI resumes (`claude --resume`, `codex resume`) need the user's go-ahead
-   — never start an interactive agent uninvited.
-3. Confirm the session shows up.
+Show the result and the final `-> resume:` command to the user. Do not start the
+target agent unless the user asks.
 
 ## Notes
 

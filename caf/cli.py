@@ -28,7 +28,7 @@ def read_adapters() -> list[Adapter]:
 
 def _scan(adapter: Adapter) -> list[SessionMeta]:
     """One scan per adapter per command (adapters are re-instantiated per command)."""
-    return getattr(adapter, "scan_cached", adapter.scan_sessions)()
+    return adapter.scan_cached()
 
 
 LIST_LIMIT = 20
@@ -366,11 +366,6 @@ def cmd_fork(args) -> int:
         raise CafError("Verify failed: official import returned no thread id")
 
     resume_cmd = target.resume_command(new_id, source_meta.project_dir)
-    undo_cmd = (
-        target.undo_command(new_id, source_meta.project_dir)
-        if hasattr(target, "undo_command")
-        else ""
-    )
 
     if args.json:
         print(
@@ -395,8 +390,6 @@ def cmd_fork(args) -> int:
     print(f"Written: {target_name} {new_id[:8]}... ({write_desc})")
     print()
     print("-> resume: " + resume_cmd)
-    if undo_cmd:
-        print(f"Undo: {undo_cmd}")
     return 0
 
 

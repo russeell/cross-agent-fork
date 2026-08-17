@@ -251,16 +251,6 @@ class ClaudeAdapter(Adapter):
             raise CafError("Write verification failed; rolled back")
         return sid
 
-    def written_path(self, sid: str, project_dir: str | None) -> Path | None:
-        cwd = project_dir or os.getcwd()
-        p = _projects_dir() / encode_cwd(cwd) / f"{sid}.jsonl"
-        return p if p.is_file() else None
-
-    def undo_command(self, sid: str, project_dir: str | None) -> str:
-        p = self.written_path(sid, project_dir)
-        return f"rm {shlex.quote(str(p))}" if p else ""
-
-
 _CACHED_CC_VERSION: str | None = None
 
 

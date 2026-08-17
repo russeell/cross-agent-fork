@@ -2,11 +2,13 @@
 
 # cross-agent-fork
 
-> Mid-task in one coding agent, continue in another.
+> Continue the same session across AI agents, without losing context.
 
 `caf` forks a session from Claude Code, Codex, or DeepSeek Harness into another agent —
 the conversation context and working directory come along, and the source session is
 never modified.
+
+Currently supports Claude Code, Codex, and DeepSeek Harness.
 
 ```bash
 caf fork cc:last --into codex
@@ -37,7 +39,7 @@ Then just say "fork the current session into Codex" in that agent.
 caf fork                      # interactive picker
 caf fork --into codex         # in a project: fork the most recent session here into Codex
 caf fork cc:last --into codex # most recent Claude Code session → Codex
-caf fork cc:last --at 12 --into codex  # new line from turn 12
+caf fork cc:last --at 12 --into codex  # fork through turn 12 (turns 1-12 stay in the new session)
 ```
 
 The source session is never modified. Every fork ends with a paste-ready resume command
@@ -60,8 +62,9 @@ caf doctor  # health check: read/write status per agent
 
 ## Partial fork
 
-`--at N` starts the new line at turn N (everything up to the next user message) —
-handy when you want to branch off before things went wrong:
+`--at N` forks the session through turn N — everything from the start through turn N
+is carried into the new session. Handy when you want to branch off before things went
+wrong:
 
 ```bash
 caf fork cc:last --at 12 --into codex

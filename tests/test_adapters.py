@@ -76,7 +76,9 @@ class ClaudeAdapterTest(unittest.TestCase):
         self.assertIn("[tool] Read · ok · src/auth.py", reloaded.turns[1].text)
         cmd = adapter.resume_command(new_id, "/tmp/fixture-proj")
         self.assertIn("cd /tmp/fixture-proj && claude --resume", cmd)
-        self.assertTrue(adapter.written_path(new_id, "/tmp/fixture-proj").is_file())
+        self.assertTrue(
+            (Path(os.environ["CAF_CC_PROJECTS"]) / "-tmp-fixture-proj" / f"{new_id}.jsonl").is_file()
+        )
 
     def test_write_creates_own_dir(self):
         adapter = ClaudeAdapter()

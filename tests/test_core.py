@@ -24,6 +24,12 @@ class FakeAdapter:
     def __init__(self, metas):
         self._metas = metas
 
+    def read_ready(self):
+        return True
+
+    def scan_cached(self):
+        return self._metas
+
     def scan_sessions(self):
         return self._metas
 

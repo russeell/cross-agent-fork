@@ -249,10 +249,6 @@ class DshAdapter(Adapter):
         opener = "open" if sys.platform == "darwin" else "xdg-open"
         return f"{opener} http://127.0.0.1:3080  # dsh web: open the session list and continue ({sid[:8]})"
 
-    def undo_command(self, sid: str, project_dir: str | None) -> str:
-        cwd = project_dir or os.getcwd()
-        return f"rm -rf {shlex.quote(str(_root() / _project_key(cwd) / sid))}"
-
     def write(self, ir: SessionIR) -> str:
         """Write a native DSH session: header + event sequence, zstd-compressed, atomic write."""
         cwd = ir.session.project_dir or os.getcwd()

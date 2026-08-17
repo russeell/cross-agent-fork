@@ -86,8 +86,7 @@ def parse_session_ref(ref: str, adapters) -> tuple[str, str]:
         return agent, sid
     found = []
     for adapter in adapters:
-        ready = getattr(adapter, "read_ready", None)
-        if ready is not None and not ready():
+        if not adapter.read_ready():
             continue  # only probe adapters that can actually read sessions
         if adapter.find_session(ref):
             found.append(adapter)
@@ -105,8 +104,7 @@ def pick_recent_session(adapters, project_dir: str | None = None) -> SessionMeta
     """Pick the most recent non-empty session; prefer project_dir when given (empty-session noise filter)."""
     best: SessionMeta | None = None
     for adapter in adapters:
-        scan = getattr(adapter, "scan_cached", adapter.scan_sessions)
-        for meta in scan():
+        for meta in adapter.scan_cached():
             if meta.turns == 0:
                 continue
             if meta.project_dir and not os.path.isdir(meta.project_dir):
