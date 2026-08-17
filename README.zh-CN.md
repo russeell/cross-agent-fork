@@ -18,17 +18,19 @@ caf fork cc:last --into codex
 
 ## 安装
 
+在你想用的 agent 对话里粘贴这段：
+
+> 帮我安装 cross-agent-fork（caf）：运行 `pipx install git+https://github.com/russeell/cross-agent-fork.git`，
+> 然后运行 `caf install-skill`（当前是 Codex 用 codex，Claude Code 用 claude）把 skill 装进当前 agent。
+
+手动安装即：
+
 ```bash
-uv tool install cross-agent-fork
+pipx install git+https://github.com/russeell/cross-agent-fork.git
+caf install-skill          # codex（默认）；或: caf install-skill claude
 ```
 
-CLI 一行装完。想在 agent（Codex / Claude Code）里用 caf，再一条命令装 skill：
-
-```bash
-caf install-skill codex    # 或: caf install-skill claude
-```
-
-之后直接在对话里说"把当前会话 fork 到 Codex"即可——不用记 session id，不用手动复制。
+装完后直接说"把当前会话 fork 到 Codex"即可。
 
 ## 快速开始
 
