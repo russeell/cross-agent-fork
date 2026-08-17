@@ -15,8 +15,7 @@ from uuid import uuid4
 from caf._rpc import RpcClient
 from caf import __version__
 from caf.adapters import Adapter
-from caf.i18n import t as _t
-from caf.core import CafxError, SessionIR, SessionMeta, Turn, atomic_write, read_jsonl
+from caf.core import CafError, SessionIR, SessionMeta, Turn, atomic_write, read_jsonl
 
 
 def _codex_home() -> Path:
@@ -44,14 +43,17 @@ _INJECTED_PREFIXES = (
 
 def _line_has_injection(line: bytes) -> bool:
     """Bytes-level injection detection for counting (markers appear literally in the line)."""
-    return any(m in line for m in (
-        b"<environment_context>",
-        b"# In app browser:",
-        b"# Files pasted by the user:",
-        b"<recommended_plugins>",
-        b"<filesystem",
-        b"<permission_profile",
-    ))
+    return any(
+        m in line
+        for m in (
+            b"<environment_context>",
+            b"# In app browser:",
+            b"# Files pasted by the user:",
+            b"<recommended_plugins>",
+            b"<filesystem",
+            b"<permission_profile",
+        )
+    )
 
 
 def _is_injected_text(text: str) -> bool:
@@ -68,8 +70,11 @@ def _codex_bin() -> Optional[str]:
 def _is_cc_source(path: str) -> bool:
     """The official importer only accepts CC session files under ~/.claude/projects."""
     from caf.adapters.claude import cc_projects_dir
+
     try:
-        return os.path.realpath(path).startswith(os.path.realpath(cc_projects_dir()) + os.sep)
+        return os.path.realpath(path).startswith(
+            os.path.realpath(cc_projects_dir()) + os.sep
+        )
     except Exception:
         return False
 
@@ -77,6 +82,7 @@ def _is_cc_source(path: str) -> bool:
 def _bridge_cc_mirror(ir: SessionIR) -> str:
     """Non-CC source -> render a CC mirror under projects/__caf_bridge__ (for the official importer, deleted after use)."""
     from caf.adapters.claude import cc_projects_dir, render_cc_lines
+
     bridge_dir = cc_projects_dir() / "__caf_bridge__"
     bridge_dir.mkdir(parents=True, exist_ok=True)
     sid = str(uuid4())
@@ -173,7 +179,9 @@ def _session_id_from_file(path: Path) -> Optional[str]:
     return None
 
 
-_MAX_TEXT_LINE = 256 * 1024  # skip first-user-text extraction for huge lines (attachments/base64)
+_MAX_TEXT_LINE = (
+    256 * 1024
+)  # skip first-user-text extraction for huge lines (attachments/base64)
 
 
 def _user_text_from_line(line: bytes) -> str:
@@ -183,7 +191,11 @@ def _user_text_from_line(line: bytes) -> str:
     except json.JSONDecodeError:
         return ""
     p = ev.get("payload") or {}
-    if ev.get("type") != "response_item" or p.get("type") != "message" or p.get("role") != "user":
+    if (
+        ev.get("type") != "response_item"
+        or p.get("type") != "message"
+        or p.get("role") != "user"
+    ):
         return ""
     text = " ".join(_payload_text(p).split())
     if not text or text.lower().startswith(_POLLUTED_PREFIXES):
@@ -192,15 +204,15 @@ def _user_text_from_line(line: bytes) -> str:
 
 
 def _analyze_rollout(path: Path) -> Optional[dict]:
-    """One pass over a rollout: id / cwd / parent / user turns / first user text / mtime."""
-    sid = cwd = parent = None
+    """One pass over a rollout: id / cwd / user turns / first user text / mtime."""
+    sid = cwd = None
     first_text = ""
     modern = legacy = 0
     has_response_item = False
     try:
         with open(path, "rb") as f:
             for line in f:
-                if b'"session_meta"' in line and (sid is None or cwd is None or parent is None):
+                if b'"session_meta"' in line and (sid is None or cwd is None):
                     try:
                         ev = json.loads(line)
                     except json.JSONDecodeError:
@@ -211,10 +223,6 @@ def _analyze_rollout(path: Path) -> Optional[dict]:
                             sid = p.get("id") or p.get("session_id") or None
                         if cwd is None:
                             cwd = p.get("cwd") or None
-                        if parent is None:
-                            pid = p.get("parent_thread_id")
-                            if isinstance(pid, str) and pid:
-                                parent = f"codex:{pid}"
                 if b'"response_item"' in line:
                     has_response_item = True
                     i = line.find(b'"payload"')
@@ -235,9 +243,13 @@ def _analyze_rollout(path: Path) -> Optional[dict]:
         mtime = path.stat().st_mtime
     except OSError:
         return None
-    return {"sid": sid, "cwd": cwd, "parent": parent,
-            "turns": modern if has_response_item else legacy,
-            "first_user_text": first_text, "mtime": mtime}
+    return {
+        "sid": sid,
+        "cwd": cwd,
+        "turns": modern if has_response_item else legacy,
+        "first_user_text": first_text,
+        "mtime": mtime,
+    }
 
 
 class CodexAdapter(Adapter):
@@ -245,7 +257,7 @@ class CodexAdapter(Adapter):
     display_name = "codex"
     install_hint = "npm install -g @openai/codex"
 
-    def detect(self) -> bool:
+    def read_ready(self) -> bool:
         return _sessions_dir().is_dir()
 
     def store_version(self) -> str:
@@ -258,8 +270,9 @@ class CodexAdapter(Adapter):
         except Exception:
             pass
         try:
-            out = subprocess.run(["codex", "--version"], capture_output=True,
-                                 text=True, timeout=5).stdout.strip()
+            out = subprocess.run(
+                ["codex", "--version"], capture_output=True, text=True, timeout=5
+            ).stdout.strip()
             return out.split()[-1] if out else ""  # "codex-cli 0.144.0" -> "0.144.0"
         except Exception:
             return ""
@@ -288,14 +301,13 @@ class CodexAdapter(Adapter):
             info = _analyze_rollout(f)
             if not info:
                 continue
-            group = groups.setdefault(info["sid"],
-                                      {"turns": 0, "mtime": 0.0, "cwd": None, "parent": None, "first": ""})
+            group = groups.setdefault(
+                info["sid"], {"turns": 0, "mtime": 0.0, "cwd": None, "first": ""}
+            )
             group["turns"] += info["turns"]
             group["mtime"] = max(group["mtime"], info["mtime"])
             if info["cwd"]:
                 group["cwd"] = info["cwd"]
-            if info["parent"]:
-                group["parent"] = info["parent"]
             if not group["first"]:
                 group["first"] = info["first_user_text"]
 
@@ -311,40 +323,40 @@ class CodexAdapter(Adapter):
                     title = fallback
             cwd = info.get("cwd") or group["cwd"]
             updated_ms = info.get("updated_at_ms") or 0
-            out.append(SessionMeta(
-                provider_id=self.agent_id,
-                session_id=sid,
-                title=title,
-                project_dir=cwd,
-                source_path=None,
-                turns=group["turns"],
-                last_active_at=(updated_ms / 1000) if updated_ms else group["mtime"],
-                parent_ref=group["parent"],
-            ))
+            out.append(
+                SessionMeta(
+                    provider_id=self.agent_id,
+                    session_id=sid,
+                    title=title,
+                    project_dir=cwd,
+                    source_path=None,
+                    turns=group["turns"],
+                    last_active_at=(updated_ms / 1000)
+                    if updated_ms
+                    else group["mtime"],
+                )
+            )
         out.sort(key=lambda m: m.last_active_at, reverse=True)
         return out
 
     def load_session(self, sid: str) -> SessionIR:
         meta = self.find_session(sid)
         if not meta:
-            raise CafxError(_t(f"Codex session not found: {sid}", f"未找到 Codex 会话 {sid}"),
-                            hint="caf list --all")
+            raise CafError(f"Codex session not found: {sid}", hint="caf list --all")
         turns: list[Turn] = []
-        seq = 0
         for f in self._files_for_session(meta.session_id):
             for ev in read_jsonl(f):
                 msg = _iter_messages(ev)
                 if msg:
                     role, text = msg
-                    seq += 1
-                    turns.append(Turn(seq, role, text))
+                    turns.append(Turn(role, text))
         return SessionIR(meta, turns)
 
     def _files_for_session(self, sid: str) -> list[Path]:
         """All rollout files for a session id (paged threads merged in path order)."""
         files = [f for f in _rollout_files() if _session_id_from_file(f) == sid]
         if not files:
-    # fallback: match by file-name prefix (legacy format)
+            # fallback: match by file-name prefix (legacy format)
             files = [f for f in _rollout_files() if sid in f.name]
         return sorted(files)
 
@@ -355,24 +367,26 @@ class CodexAdapter(Adapter):
     def write(self, ir: SessionIR) -> str:
         """Official import: externalAgentConfig/import (same mechanism as codex-plugin-cc)."""
         if not _codex_bin():
-            raise CafxError(_t("codex CLI not found", "未找到 codex CLI"),
-                            hint="npm install -g @openai/codex")
+            raise CafError("codex CLI not found", hint="npm install -g @openai/codex")
         source = ir.session.source_path
         mirror: Optional[str] = None
-        if ir.modified or not (source and Path(source).is_file() and _is_cc_source(source)):
+        if ir.modified or not (
+            source and Path(source).is_file() and _is_cc_source(source)
+        ):
             # IR was sliced/injected, or the source is not CC -> render a CC mirror
             # -> official import (deleted after use)
             mirror = _bridge_cc_mirror(ir)
             source = mirror
         try:
-            new_id = import_external_session(source, ir.session.project_dir or os.getcwd())
+            new_id = import_external_session(
+                source, ir.session.project_dir or os.getcwd()
+            )
         finally:
             if mirror:
                 try:
                     Path(mirror).unlink(missing_ok=True)
                 except OSError:
                     pass
-        self.invalidate()
         return new_id
 
 
@@ -382,12 +396,13 @@ IMPORT_COMPLETED = "externalAgentConfig/import/completed"
 IMPORT_TIMEOUT_S = 120
 
 
-def import_external_session(source_path: str, cwd: str, timeout_s: int = IMPORT_TIMEOUT_S) -> str:
+def import_external_session(
+    source_path: str, cwd: str, timeout_s: int = IMPORT_TIMEOUT_S
+) -> str:
     """Start codex app-server (stdio JSON-RPC), run the official import, and wait for completion."""
     bin_path = _codex_bin()
     if not bin_path:
-        raise CafxError(_t("codex CLI not found", "未找到 codex CLI"),
-                        hint="npm install -g @openai/codex")
+        raise CafError("codex CLI not found", hint="npm install -g @openai/codex")
     proc = subprocess.Popen(
         [bin_path, "app-server", "--stdio"],
         stdin=subprocess.PIPE,
@@ -398,7 +413,9 @@ def import_external_session(source_path: str, cwd: str, timeout_s: int = IMPORT_
     )
     rpc = RpcClient(proc)
     try:
-        rpc.call(1, "initialize", {"clientInfo": {"name": "caf", "version": __version__}})
+        rpc.call(
+            1, "initialize", {"clientInfo": {"name": "caf", "version": __version__}}
+        )
         rpc.notify("initialized")
         params = {
             "source": "caf",
@@ -417,7 +434,7 @@ def import_external_session(source_path: str, cwd: str, timeout_s: int = IMPORT_
                         "commands": [],
                     },
                 }
-            ]
+            ],
         }
         rpc.call(2, "externalAgentConfig/import", params, cancel_on=IMPORT_COMPLETED)
         completed = rpc.wait_for(IMPORT_COMPLETED, timeout_s=timeout_s)
@@ -429,8 +446,9 @@ def import_external_session(source_path: str, cwd: str, timeout_s: int = IMPORT_
 def _parse_import_completed(params) -> str:
     """Resolve the SESSIONS target (= thread id) from the completed notification's itemTypeResults."""
     if not isinstance(params, dict):
-        raise CafxError(_t("Malformed Codex import-completed notification",
-                          "Codex 导入完成通知格式异常"), hint="caf doctor")
+        raise CafError(
+            "Malformed Codex import-completed notification", hint="caf doctor"
+        )
     results = params.get("itemTypeResults") or []
     for result in results:
         if not isinstance(result, dict) or result.get("itemType") != "SESSIONS":
@@ -444,11 +462,12 @@ def _parse_import_completed(params) -> str:
         if failures:
             failure = failures[0]
             message = (
-                failure.get("message")
-                or failure.get("errorType")
-                or _t("unknown error", "未知错误")
+                failure.get("message") or failure.get("errorType") or "unknown error"
             )
-            raise CafxError(_t(f"Codex import failed: {message}", f"Codex 导入失败: {message}"),
-                            hint=_t("Check the source session format or retry", "检查源会话格式或重试"))
-    raise CafxError(_t("Codex import completed but no imported thread found",
-                      "Codex 导入完成但未找到 imported thread"), hint="caf doctor")
+            raise CafError(
+                f"Codex import failed: {message}",
+                hint="Check the source session format or retry",
+            )
+    raise CafError(
+        "Codex import completed but no imported thread found", hint="caf doctor"
+    )

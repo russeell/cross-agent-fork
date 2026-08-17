@@ -7,41 +7,28 @@ import unittest
 from pathlib import Path
 
 from caf.adapters import discover_adapters
-from caf.i18n import set_lang
 from caf.core import SessionIR, SessionMeta, ToolSummary, Turn
-from caf.plugins.dsh import DshAdapter, _file_from_args, _project_key
+from caf.adapters.dsh import DshAdapter, _file_from_args, _project_key
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
-def _zstd_ok() -> bool:
-    try:
-        import zstandard  # noqa: F401
-        return True
-    except ImportError:
-        pass
-    return shutil.which("zstd") is not None
-
-
-@unittest.skipUnless(_zstd_ok(), "需要 zstandard 或 zstd CLI")
 class DshPluginTest(unittest.TestCase):
     def setUp(self):
-        set_lang("en")
         self.tmp = tempfile.mkdtemp()
         os.environ["CAF_DSH_SESSIONS"] = str(Path(self.tmp) / "sessions")
         os.environ["DSH_HOME"] = str(Path(self.tmp) / "dsh-home")
         (Path(os.environ["DSH_HOME"]) / "profiles" / "tui").mkdir(parents=True)
-        os.environ["CAF_LANG"] = "en"
 
     def tearDown(self):
         os.environ.pop("CAF_DSH_SESSIONS", None)
         os.environ.pop("DSH_HOME", None)
-        os.environ.pop("CAF_LANG", None)
         shutil.rmtree(self.tmp)
 
     def test_resume_web_only_without_tui_profile(self):
         """web-only dsh installs (no tui profile) get a GUI resume hint, not a dead command."""
-        from caf.plugins.dsh import DshAdapter
+        from caf.adapters.dsh import DshAdapter
+
         tui_dir = Path(os.environ["DSH_HOME"]) / "profiles" / "tui"
         tui_dir.rmdir()  # simulate a web-only install
         adapter = DshAdapter()
@@ -49,8 +36,10 @@ class DshPluginTest(unittest.TestCase):
         self.assertIn("http://127.0.0.1:3080", cmd)
         self.assertNotIn("--profile tui", cmd)
         tui_dir.mkdir()  # restore: with a tui profile the CLI resume form is used
-        self.assertIn("dsh --profile tui --resume session-abc",
-                      adapter.resume_command("session-abc", "/tmp/fixture-proj"))
+        self.assertIn(
+            "dsh --profile tui --resume session-abc",
+            adapter.resume_command("session-abc", "/tmp/fixture-proj"),
+        )
 
     def test_project_key(self):
         self.assertEqual(
@@ -73,12 +62,16 @@ class DshPluginTest(unittest.TestCase):
 
     def test_read_real_fixture(self):
         root = Path(os.environ["CAF_DSH_SESSIONS"])
-        d = root / "--tmp-fixture-proj--" / "session-aaaaaaaa-0000-0000-0000-000000000001"
+        d = (
+            root
+            / "--tmp-fixture-proj--"
+            / "session-aaaaaaaa-0000-0000-0000-000000000001"
+        )
         d.mkdir(parents=True)
         shutil.copy(FIXTURES / "dsh_sample.jsonl.zstd", d / "session.jsonl.zstd")
 
         adapter = DshAdapter()
-        self.assertTrue(adapter.detect())
+        self.assertTrue(adapter.read_ready())
         metas = adapter.scan_sessions()
         self.assertEqual(len(metas), 1)
         meta = metas[0]
@@ -96,10 +89,14 @@ class DshPluginTest(unittest.TestCase):
     def test_write_roundtrip(self):
         adapter = DshAdapter()
         ir = SessionIR(
-            SessionMeta("cc", "9f3a12", title="OAuth 重构", project_dir="/tmp/中文项目"),
+            SessionMeta(
+                "cc", "9f3a12", title="OAuth 重构", project_dir="/tmp/中文项目"
+            ),
             [
-                Turn(1, "user", "把 OAuth 回调改成 PKCE 流程"),
-                Turn(2, "assistant", "完成", [ToolSummary("edit_file", "ok", "src/auth.py")]),
+                Turn("user", "把 OAuth 回调改成 PKCE 流程"),
+                Turn(
+                    "assistant", "完成", [ToolSummary("edit_file", "ok", "src/auth.py")]
+                ),
             ],
         )
         sid = adapter.write(ir)
@@ -119,8 +116,10 @@ class DshPluginTest(unittest.TestCase):
 
         # directory encoding is correct (each CJK char -> ~XXXX)
         written = Path(os.environ["CAF_DSH_SESSIONS"])
-        self.assertTrue(list(written.glob("--tmp-~4E2D~6587~9879~76EE--/session-*")) or
-                        list(written.glob("--tmp-*/session-*")))
+        self.assertTrue(
+            list(written.glob("--tmp-~4E2D~6587~9879~76EE--/session-*"))
+            or list(written.glob("--tmp-*/session-*"))
+        )
 
     def test_write_one_frame_per_line(self):
         """DSH stores one zstd frame per JSON line; a single-frame log is rejected."""
@@ -132,10 +131,12 @@ class DshPluginTest(unittest.TestCase):
         adapter = DshAdapter()
         ir = SessionIR(
             SessionMeta("cc", "9f3a12", project_dir="/tmp/fixture-proj"),
-            [Turn(1, "user", "u1"), Turn(2, "assistant", "a1")],
+            [Turn("user", "u1"), Turn("assistant", "a1")],
         )
         sid = adapter.write(ir)
-        path = next(Path(os.environ["CAF_DSH_SESSIONS"]).rglob(f"{sid}/session.jsonl.zstd"))
+        path = next(
+            Path(os.environ["CAF_DSH_SESSIONS"]).rglob(f"{sid}/session.jsonl.zstd")
+        )
         data = path.read_bytes()
 
         dctx = zstd.ZstdDecompressor()
@@ -146,22 +147,30 @@ class DshPluginTest(unittest.TestCase):
             consumed = len(data) - pos - len(dobj.unused_data)
             self.assertGreater(consumed, 0)
             pos += consumed
-        self.assertEqual(len(payloads), 5)  # header + turn/start + user + assistant + turn/end
+        self.assertEqual(
+            len(payloads), 5
+        )  # header + turn/start + user + assistant + turn/end
         self.assertTrue(all(p.endswith(b"\n") and len(p.strip()) for p in payloads))
         self.assertIn(b'"type": "session"', payloads[0])
         import json
+
         events = [json.loads(p) for p in payloads[1:]]
-        self.assertEqual([e["seq"] for e in events], list(range(len(events))))  # dsh: events[i].seq === i
+        self.assertEqual(
+            [e["seq"] for e in events], list(range(len(events)))
+        )  # dsh: events[i].seq === i
         user = next(e for e in events if e["type"] == "user/message")
         self.assertNotEqual(user["data"]["id"], "")  # dsh: message events require an id
-        self.assertEqual(user.get("surfaceOp"), "append")  # dsh: surface events require the marker
+        self.assertEqual(
+            user.get("surfaceOp"), "append"
+        )  # dsh: surface events require the marker
         assistant = next(e for e in events if e["type"] == "assistant/message")
         self.assertNotEqual(assistant["data"]["message"]["id"], "")
         self.assertEqual(assistant.get("surfaceOp"), "append")
 
     def test_read_single_frame_still_compatible(self):
         """Old single-frame logs (pre-frame-per-line dsh) must still decompress."""
-        from caf.plugins.dsh import _zstd_compress_frames, _zstd_decompress
+        from caf.adapters.dsh import _zstd_compress_frames, _zstd_decompress
+
         try:
             import zstandard as zstd
         except ImportError:
@@ -174,24 +183,30 @@ class DshPluginTest(unittest.TestCase):
 
     def test_write_multi_assistant_single_turn_end(self):
         """One user turn with several assistant segments -> exactly one turn/end."""
-        from caf.plugins.dsh import _zstd_decompress
+        from caf.adapters.dsh import _zstd_decompress
 
         adapter = DshAdapter()
         ir = SessionIR(
             SessionMeta("cc", "9f3a12", project_dir="/tmp/fixture-proj"),
             [
-                Turn(1, "user", "u1"),
-                Turn(2, "assistant", "a1"),
-                Turn(3, "assistant", "a2"),
-                Turn(4, "user", "u2"),
-                Turn(5, "assistant", "a3"),
+                Turn("user", "u1"),
+                Turn("assistant", "a1"),
+                Turn("assistant", "a2"),
+                Turn("user", "u2"),
+                Turn("assistant", "a3"),
             ],
         )
         sid = adapter.write(ir)
-        path = next((Path(os.environ["CAF_DSH_SESSIONS"]).rglob(f"{sid}/session.jsonl.zstd")))
+        path = next(
+            (Path(os.environ["CAF_DSH_SESSIONS"]).rglob(f"{sid}/session.jsonl.zstd"))
+        )
         import json
-        lines = [line for line in _zstd_decompress(path.read_bytes()).decode().splitlines()
-                 if line.strip()]
+
+        lines = [
+            line
+            for line in _zstd_decompress(path.read_bytes()).decode().splitlines()
+            if line.strip()
+        ]
         events = [json.loads(line) for line in lines]
         types = [e["type"] for e in events]
         self.assertEqual(types.count("turn/start"), 2)

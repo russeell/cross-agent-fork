@@ -6,12 +6,11 @@ import unittest
 from pathlib import Path
 
 from caf.core import (
-    CafxError,
+    CafError,
     SessionMeta,
     ToolSummary,
     Turn,
     atomic_write,
-    encode_cwd,
     parse_session_ref,
     pick_recent_session,
     slice_turns,
@@ -36,15 +35,6 @@ class FakeAdapter:
 
 
 class CoreTest(unittest.TestCase):
-    def test_cwd_encode_decode(self):
-        self.assertEqual(encode_cwd("/tmp/fixture-proj"), "-tmp-fixture-proj")
-        # verified CC rule: every non-ASCII char -> '-' (decode is ambiguous; always trust event cwd)
-        self.assertEqual(encode_cwd("/tmp/中文项目"), "-tmp-----")
-        self.assertEqual(
-            encode_cwd("/Users/russeell/Documents/开源项目开发/jobfindsme"),
-            "-Users-russeell-Documents--------jobfindsme",
-        )
-
     def test_atomic_write(self):
         with tempfile.TemporaryDirectory() as tmp:
             p = Path(tmp) / "a" / "x.jsonl"
@@ -59,7 +49,7 @@ class CoreTest(unittest.TestCase):
 
     def test_parse_ref_unknown(self):
         adapters = [FakeAdapter([SessionMeta("cc", "9f3a12", last_active_at=1)])]
-        with self.assertRaises(CafxError) as ctx:
+        with self.assertRaises(CafError) as ctx:
             parse_session_ref("zzz", adapters)
         self.assertTrue(ctx.exception.hint)
 
@@ -70,9 +60,15 @@ class CoreTest(unittest.TestCase):
         self.assertEqual(picked.session_id, "b")
 
     def test_pick_recent_project_filter(self):
-        here = SessionMeta("cc", "a", turns=1, project_dir=os.getcwd(), last_active_at=100)
-        other = SessionMeta("codex", "b", turns=1, project_dir="/elsewhere", last_active_at=999)
-        picked = pick_recent_session([FakeAdapter([here, other])], project_dir=os.getcwd())
+        here = SessionMeta(
+            "cc", "a", turns=1, project_dir=os.getcwd(), last_active_at=100
+        )
+        other = SessionMeta(
+            "codex", "b", turns=1, project_dir="/elsewhere", last_active_at=999
+        )
+        picked = pick_recent_session(
+            [FakeAdapter([here, other])], project_dir=os.getcwd()
+        )
         self.assertEqual(picked.session_id, "a")
 
     def test_pick_recent_unknown_cwd_never_counts_as_current_project(self):
@@ -87,13 +83,11 @@ class CoreTest(unittest.TestCase):
             FakeAdapter([SessionMeta("cc", "abc123", last_active_at=1)]),
             FakeAdapter([SessionMeta("codex", "abc456", last_active_at=1)]),
         ]
-        with self.assertRaises(CafxError):
+        with self.assertRaises(CafError):
             parse_session_ref("abc", adapters)
 
-    def test_with_tool_lines_is_language_independent(self):
-        """Envelope text must stay canonical English even under zh UI language."""
-        from caf.i18n import set_lang
-        set_lang("zh")
+    def test_with_tool_lines_canonical(self):
+        """Envelope text uses canonical English tokens."""
         text = with_tool_lines("", [ToolSummary("edit_file", "ok", "src/auth.py")])
         self.assertEqual(text, "[tool] edit_file · ok · src/auth.py")
 
@@ -107,61 +101,53 @@ class CoreTest(unittest.TestCase):
         """Build n complete turns (user + assistant alternating)."""
         out = []
         for i in range(1, n + 1):
-            out.append(Turn(len(out) + 1, "user", f"u{i}"))
-            out.append(Turn(len(out) + 1, "assistant", f"a{i}"))
+            out.append(Turn("user", f"u{i}"))
+            out.append(Turn("assistant", f"a{i}"))
         return out
 
     def test_slice_through(self):
         turns = self._turns(5)
-        sliced, warning = slice_turns(turns, 3, "through")
+        sliced, warning = slice_turns(turns, 3)
         self.assertEqual(len(sliced), 6)  # u1..u3 + a1..a3
         self.assertEqual(sliced[-1].text, "a3")
         self.assertIsNone(warning)
 
-    def test_slice_before(self):
-        turns = self._turns(5)
-        sliced, _ = slice_turns(turns, 3, "before")
-        self.assertEqual(len(sliced), 4)  # 到 u2+a2
-        self.assertEqual(sliced[-1].text, "a2")
-
     def test_slice_incomplete_turn(self):
-        turns = self._turns(3) + [Turn(7, "user", "u4-未完成")]
-        sliced, warning = slice_turns(turns, 4, "through")
+        turns = self._turns(3) + [Turn("user", "u4-未完成")]
+        sliced, warning = slice_turns(turns, 4)
         self.assertEqual(len(sliced), 6)
         self.assertIn("unfinished", warning)
 
     def test_slice_includes_all_assistant_segments(self):
         """Turn N = user N plus everything up to the next user (tool loops produce several assistants)."""
         turns = [
-            Turn(1, "user", "u1"), Turn(2, "assistant", "a1"), Turn(3, "assistant", "a2"),
-            Turn(4, "user", "u2"), Turn(5, "assistant", "a3"),
+            Turn("user", "u1"),
+            Turn("assistant", "a1"),
+            Turn("assistant", "a2"),
+            Turn("user", "u2"),
+            Turn("assistant", "a3"),
         ]
-        sliced, warning = slice_turns(turns, 1, "through")
+        sliced, warning = slice_turns(turns, 1)
         self.assertEqual([t.text for t in sliced], ["u1", "a1", "a2"])
         self.assertIsNone(warning)
-        sliced2, _ = slice_turns(turns, 2, "through")
+        sliced2, _ = slice_turns(turns, 2)
         self.assertEqual([t.text for t in sliced2], ["u1", "a1", "a2", "u2", "a3"])
 
     def test_slice_consecutive_users_keeps_only_user_n(self):
         """Multi-part input (user N directly followed by user N+1): turn N is just user N."""
-        turns = [Turn(1, "user", "u1"), Turn(2, "user", "u2"), Turn(3, "assistant", "a2")]
-        sliced, _ = slice_turns(turns, 1, "through")
+        turns = [Turn("user", "u1"), Turn("user", "u2"), Turn("assistant", "a2")]
+        sliced, _ = slice_turns(turns, 1)
         self.assertEqual([t.text for t in sliced], ["u1"])
 
     def test_slice_out_of_range(self):
         turns = self._turns(2)
-        with self.assertRaises(CafxError):
-            slice_turns(turns, 5, "through")
+        with self.assertRaises(CafError):
+            slice_turns(turns, 5)
 
     def test_slice_at_zero(self):
         turns = self._turns(2)
-        with self.assertRaises(CafxError):
-            slice_turns(turns, 0, "through")
-
-    def test_slice_before_one(self):
-        turns = self._turns(2)
-        with self.assertRaises(CafxError):
-            slice_turns(turns, 1, "before")
+        with self.assertRaises(CafError):
+            slice_turns(turns, 0)
 
 
 if __name__ == "__main__":

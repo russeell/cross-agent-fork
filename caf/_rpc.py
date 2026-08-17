@@ -7,8 +7,7 @@ import fcntl
 import os
 import time
 
-from caf.core import CafxError
-from caf.i18n import t as _t
+from caf.core import CafError
 
 
 class RpcClient:
@@ -34,14 +33,16 @@ class RpcClient:
             obj = json.loads(line)
             if obj.get("id") == req_id:
                 if "error" in obj:
-                    raise CafxError(_t(f"codex app-server error: {obj['error']}",
-                                      f"codex app-server 返回错误: {obj['error']}"))
+                    raise CafError(f"codex app-server error: {obj['error']}")
                 return obj.get("result", {})
             if cancel_on and obj.get("method") == cancel_on:
-                raise CafxError(_t("codex app-server import completed before request pairing",
-                                  "codex app-server 导入提前完成（请求未配对）"))
-        raise CafxError(_t("codex app-server did not respond", "codex app-server 无响应"),
-                        hint=_t("Check codex install/login with caf doctor", "caf doctor 检查 codex 安装与登录"))
+                raise CafError(
+                    "codex app-server import completed before request pairing"
+                )
+        raise CafError(
+            "codex app-server did not respond",
+            hint="Check codex install/login with caf doctor",
+        )
 
     def wait_for(self, method: str, timeout_s: int) -> dict:
         """Block until a server notification arrives; real timeout via select-polled reads."""
@@ -52,8 +53,9 @@ class RpcClient:
                 continue
             if obj.get("method") == method:
                 return obj.get("params") or {}
-        raise CafxError(_t(f"Timed out waiting for {method}", f"等待 {method} 超时"),
-                        hint=_t("Retry or run caf doctor", "重试或运行 caf doctor"))
+        raise CafError(
+            f"Timed out waiting for {method}", hint="Retry or run caf doctor"
+        )
 
     def shutdown(self) -> None:
         try:
@@ -88,7 +90,9 @@ class RpcClient:
                 time.sleep(0.05)
                 continue
             if chunk is None:
-                time.sleep(0.05)  # non-blocking read: no data yet (EAGAIN surfaces as None)
+                time.sleep(
+                    0.05
+                )  # non-blocking read: no data yet (EAGAIN surfaces as None)
                 continue
             if not chunk:
                 eof = True

@@ -1,10 +1,10 @@
-"""DeepSeek Harness (DSH) community plugin: reads/writes zstd JSONL sessions under ~/.dsh/sessions.
+"""DeepSeek Harness (DSH) adapter: reads/writes zstd JSONL sessions under ~/.dsh/sessions.
 
 Format (verified against @deepseek-ai/dsh-session-persistence-jsonl):
   ~/.dsh/sessions/<projectKey(cwd)>/session-<uuid>/session.jsonl.zstd
   line 1 header: {"type":"session","version":0,"id":"session-...","createdAt":ms,"cwd":...}
   following events: turn/start | user/message | assistant/message | tool/call | tool/result | turn/end ...
-Dependency: zstandard (a required dependency since v0.2; the system zstd CLI remains a fallback).
+One zstd frame per JSON line; message events carry surfaceOp (seed validation requires it).
 """
 
 from __future__ import annotations
@@ -12,86 +12,57 @@ from __future__ import annotations
 import json
 import os
 import shlex
-import shutil
-import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Optional
 from uuid import uuid4
 
+import zstandard as zstd
+
 from caf.adapters import Adapter
-from caf.i18n import t as _t
-from caf.core import CafxError, SessionIR, SessionMeta, ToolSummary, Turn, with_tool_lines
+from caf.core import (
+    CafError,
+    SessionIR,
+    SessionMeta,
+    ToolSummary,
+    Turn,
+    with_tool_lines,
+)
 
 _SAFE = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-")
 
 
 def _root() -> Path:
-    return Path(os.environ.get("CAF_DSH_SESSIONS", str(Path.home() / ".dsh" / "sessions")))
+    return Path(
+        os.environ.get("CAF_DSH_SESSIONS", str(Path.home() / ".dsh" / "sessions"))
+    )
 
 
 def _dsh_home() -> Path:
     return Path(os.environ.get("DSH_HOME", str(Path.home() / ".dsh")))
 
 
-def _zstd_available() -> bool:
-    try:
-        import zstandard  # noqa: F401
-        return True
-    except ImportError:
-        pass
-    return shutil.which("zstd") is not None
-
-
 def _zstd_decompress(data: bytes) -> bytes:
-    try:
-        import zstandard as zstd
-    except ImportError:
-        pass
-    else:
-        dctx = zstd.ZstdDecompressor()
-        try:
-            # Frame by frame: DSH writes one frame per JSON line, and
-            # decompress() silently returns only the first frame on multi-frame input.
-            out = bytearray()
-            pos = 0
-            while pos < len(data):
-                dobj = dctx.decompressobj()
-                out += dobj.decompress(data[pos:])
-                consumed = len(data) - pos - len(dobj.unused_data)
-                if consumed <= 0:
-                    raise zstd.ZstdError("no frame progress")
-                pos += consumed
-            return bytes(out)
-        except zstd.ZstdError:
-            pass  # malformed frame -> fall through to the CLI
-    proc = subprocess.run(["zstd", "-d", "-c"], input=data, capture_output=True)
-    if proc.returncode != 0:
-        raise CafxError(_t("zstd decompression failed", "zstd 解压失败"),
-                        hint=_t("pip install zstandard (or brew install zstd)",
-                               "pip install zstandard 或 brew install zstd"))
-    return proc.stdout
+    """Decompress a multi-frame log: decompress() silently returns only the first frame,
+    so walk frames one by one (DSH writes one frame per JSON line)."""
+    dctx = zstd.ZstdDecompressor()
+    out = bytearray()
+    pos = 0
+    while pos < len(data):
+        dobj = dctx.decompressobj()
+        out += dobj.decompress(data[pos:])
+        consumed = len(data) - pos - len(dobj.unused_data)
+        if consumed <= 0:
+            raise zstd.ZstdError("no frame progress")
+        pos += consumed
+    return bytes(out)
 
 
 def _zstd_compress_frames(chunks: list[bytes]) -> bytes:
     """Compress each chunk as its own zstd frame (DSH stores one frame per JSON line;
     a single frame holding the whole log is rejected by its reader)."""
-    try:
-        import zstandard as zstd
-        cctx = zstd.ZstdCompressor()
-        return b"".join(cctx.compress(c) for c in chunks)
-    except ImportError:
-        pass
-    out = b""
-    for chunk in chunks:
-        proc = subprocess.run(["zstd", "-q", "-c"], input=chunk, capture_output=True)
-        if proc.returncode != 0:
-            raise CafxError(_t("zstd compression failed", "zstd 压缩失败"),
-                            hint=_t("pip install zstandard (or brew install zstd)",
-                                   "pip install zstandard 或 brew install zstd"))
-        out += proc.stdout
-    return out
+    cctx = zstd.ZstdCompressor()
+    return b"".join(cctx.compress(c) for c in chunks)
 
 
 def _project_key(cwd: str) -> str:
@@ -117,12 +88,16 @@ def _text_from_content(content) -> str:
     parts = []
     if isinstance(content, list):
         for block in content:
-            if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str):
+            if (
+                isinstance(block, dict)
+                and block.get("type") == "text"
+                and isinstance(block.get("text"), str)
+            ):
                 parts.append(block["text"])
     return "\n".join(parts)
 
 
-def _file_from_args(arguments) -> Optional[str]:
+def _file_from_args(arguments) -> str | None:
     """Extract a file name from tool/call arguments (accepts a JSON string or a parsed dict)."""
     if isinstance(arguments, str):
         try:
@@ -140,17 +115,19 @@ def _file_from_args(arguments) -> Optional[str]:
 class DshAdapter(Adapter):
     agent_id = "dsh"
     display_name = "deepseek-harness"
-    install_hint = "pip install zstandard (or brew install zstd)"
+    install_hint = (
+        "install DeepSeek Harness first (npx @deepseek-ai/dsh or the desktop app)"
+    )
 
     def store_path(self) -> str:
         return "~/.dsh/sessions"
 
-    def detect(self) -> bool:
-        return _root().is_dir() and _zstd_available()
+    def read_ready(self) -> bool:
+        return _root().is_dir()
 
     def write_ready(self) -> bool:
-        """Writing creates the store (mkdir); only zstd is needed."""
-        return _zstd_available()
+        """Writing creates the store (mkdir); requires dsh itself to be installed."""
+        return _dsh_home().is_dir()
 
     def store_version(self) -> str:
         return ""  # session format version != product version; do not fake one
@@ -188,20 +165,13 @@ class DshAdapter(Adapter):
                 continue
         return events
 
-    def _meta_from_log(self, path: Path, dir_name: str) -> Optional[SessionMeta]:
+    def _meta_from_log(self, path: Path, dir_name: str) -> SessionMeta | None:
         events = self._read_events(path)
         if not events or events[0].get("type") != "session":
             return None
         header = events[0]
         sid = str(header.get("id") or dir_name)
         cwd = header.get("cwd") or None
-        parent = header.get("parentSession")
-        parent_ref = None
-        if isinstance(parent, str) and parent:
-            if ":" in parent:
-                parent_ref = parent  # e.g. "cc:9f3a..." written by caf
-            else:
-                parent_ref = f"dsh:{parent}"  # native dsh parent id
         title = ""
         turns = 0
         first_user = ""
@@ -212,7 +182,9 @@ class DshAdapter(Adapter):
                 if (data.get("source") or {}).get("kind") != "tool":
                     turns += 1
                     if not first_user:
-                        first_user = " ".join(_text_from_content(data.get("content")).split())
+                        first_user = " ".join(
+                            _text_from_content(data.get("content")).split()
+                        )
             elif t == "session/title" and not title:
                 v = data.get("title")
                 if isinstance(v, str) and v.strip():
@@ -227,54 +199,57 @@ class DshAdapter(Adapter):
             project_dir=cwd,
             source_path=str(path),
             turns=turns,
-            created_at=stat.st_ctime,
             last_active_at=stat.st_mtime,
-            parent_ref=parent_ref,
         )
 
     def load_session(self, sid: str) -> SessionIR:
         meta = self.find_session(sid)
         if not meta:
-            raise CafxError(_t(f"DeepSeek Harness session not found: {sid}",
-                              f"未找到 DeepSeek Harness 会话 {sid}"), hint="caf list --all")
+            raise CafError(
+                f"DeepSeek Harness session not found: {sid}", hint="caf list --all"
+            )
         events = self._read_events(Path(meta.source_path))
         turns: list[Turn] = []
-        seq = 0
         for ev in events[1:]:
             t = ev.get("type")
             data = ev.get("data") or {}
             if t == "user/message" and (data.get("source") or {}).get("kind") != "tool":
                 text = _text_from_content(data.get("content"))
                 if text:
-                    seq += 1
-                    turns.append(Turn(seq, "user", text))
+                    turns.append(Turn("user", text))
             elif t == "assistant/message":
                 msg = data.get("message") or {}
                 text = _text_from_content(msg.get("content"))
                 if text:
-                    seq += 1
-                    turns.append(Turn(seq, "assistant", text))
+                    turns.append(Turn("assistant", text))
             elif t == "tool/call" and turns and turns[-1].role == "assistant":
-                turns[-1].tools.append(ToolSummary(
-                    str(data.get("name", "tool")),
-                    "ok",
-                    _file_from_args(data.get("arguments")),
-                ))
-            elif t == "tool/result" and turns and turns[-1].role == "assistant" and data.get("error"):
+                turns[-1].tools.append(
+                    ToolSummary(
+                        str(data.get("name", "tool")),
+                        "ok",
+                        _file_from_args(data.get("arguments")),
+                    )
+                )
+            elif (
+                t == "tool/result"
+                and turns
+                and turns[-1].role == "assistant"
+                and data.get("error")
+            ):
                 if turns[-1].tools:
                     turns[-1].tools[-1].status = "error"
         return SessionIR(meta, turns)
 
-    def resume_command(self, sid: str, project_dir: Optional[str]) -> str:
+    def resume_command(self, sid: str, project_dir: str | None) -> str:
         prefix = f"cd {shlex.quote(project_dir)} && " if project_dir else ""
         if (_dsh_home() / "profiles" / "tui").is_dir():
             return f"{prefix}dsh --profile tui --resume {sid}"
         # web-only installs (the common dsh setup) have no tui profile: the session
         # shows up in the GUI's session list, so point resume at the web app.
         opener = "open" if sys.platform == "darwin" else "xdg-open"
-        return f"{opener} http://127.0.0.1:3080  # dsh web: 打开会话列表找到该会话继续（{sid[:8]}）"
+        return f"{opener} http://127.0.0.1:3080  # dsh web: open the session list and continue ({sid[:8]})"
 
-    def undo_command(self, sid: str, project_dir: Optional[str]) -> str:
+    def undo_command(self, sid: str, project_dir: str | None) -> str:
         cwd = project_dir or os.getcwd()
         return f"rm -rf {shlex.quote(str(_root() / _project_key(cwd) / sid))}"
 
@@ -286,67 +261,123 @@ class DshAdapter(Adapter):
         events: list[dict] = []
         seq = 0  # dsh requires contiguous seq starting at 0 (events[i].seq === i)
         turn = 0
-        first_user_seq: Optional[int] = None
+        first_user_seq: int | None = None
         turn_open = False
         for t in ir.turns:
             if t.role == "user":
                 if turn_open:
                     # close the previous turn first (multi-part input / consecutive users)
-                    events.append({"type": "turn/end", "seq": seq, "time": now_ms,
-                                   "data": {"turn": turn, "reason": {"kind": "completed"}}})
+                    events.append(
+                        {
+                            "type": "turn/end",
+                            "seq": seq,
+                            "time": now_ms,
+                            "data": {"turn": turn, "reason": {"kind": "completed"}},
+                        }
+                    )
                     seq += 1
                 turn += 1
                 turn_open = True
-                events.append({"type": "turn/start", "seq": seq, "time": now_ms, "data": {"turn": turn}})
+                events.append(
+                    {
+                        "type": "turn/start",
+                        "seq": seq,
+                        "time": now_ms,
+                        "data": {"turn": turn},
+                    }
+                )
                 seq += 1
                 if first_user_seq is None:
                     first_user_seq = seq
-                events.append({"type": "user/message", "seq": seq, "time": now_ms,
-                               "surfaceOp": "append",
-                               "data": {"id": str(uuid4()), "role": "user",
-                                        "content": [{"type": "text", "text": t.text}],
-                                        "source": {"kind": "user"}}})
+                events.append(
+                    {
+                        "type": "user/message",
+                        "seq": seq,
+                        "time": now_ms,
+                        "surfaceOp": "append",
+                        "data": {
+                            "id": str(uuid4()),
+                            "role": "user",
+                            "content": [{"type": "text", "text": t.text}],
+                            "source": {"kind": "user"},
+                        },
+                    }
+                )
                 seq += 1
             elif t.role == "assistant":
                 text = with_tool_lines(t.text, t.tools)
-                events.append({"type": "assistant/message", "seq": seq, "time": now_ms,
-                               "surfaceOp": "append",
-                               "data": {"turn": turn, "step": 1,
-                                        "message": {
-                                            "id": str(uuid4()),
-                                            "role": "assistant",
-                                            "content": [{"type": "text", "text": text}] if text else [],
-                                            "source": {"kind": "model", "provider": "caf",
-                                                       "model": "cross-agent-fork"}}}})
+                events.append(
+                    {
+                        "type": "assistant/message",
+                        "seq": seq,
+                        "time": now_ms,
+                        "surfaceOp": "append",
+                        "data": {
+                            "turn": turn,
+                            "step": 1,
+                            "message": {
+                                "id": str(uuid4()),
+                                "role": "assistant",
+                                "content": [{"type": "text", "text": text}]
+                                if text
+                                else [],
+                                "source": {
+                                    "kind": "model",
+                                    "provider": "caf",
+                                    "model": "cross-agent-fork",
+                                },
+                            },
+                        },
+                    }
+                )
                 seq += 1
         if turn_open:
-            events.append({"type": "turn/end", "seq": seq, "time": now_ms,
-                           "data": {"turn": turn, "reason": {"kind": "completed"}}})
+            events.append(
+                {
+                    "type": "turn/end",
+                    "seq": seq,
+                    "time": now_ms,
+                    "data": {"turn": turn, "reason": {"kind": "completed"}},
+                }
+            )
             seq += 1
 
-        header = {"type": "session", "version": 0, "id": sid, "createdAt": now_ms,
-                  "cwd": cwd, "delegationDepth": 0, "agentPreset": "standard",
-                  "parentSession": f"{ir.session.provider_id}:{ir.session.session_id}"}
+        header = {
+            "type": "session",
+            "version": 0,
+            "id": sid,
+            "createdAt": now_ms,
+            "cwd": cwd,
+            "delegationDepth": 0,
+            "agentPreset": "standard",
+        }
         lines = [json.dumps(header, ensure_ascii=False)]
         lines += [json.dumps(ev, ensure_ascii=False) for ev in events]
 
         if ir.session.title and first_user_seq is not None:
-            title_ev = {"type": "session/title", "seq": seq, "time": now_ms,
-                        "data": {"title": ir.session.title[:120],
-                                 "messageSeqs": [first_user_seq],
-                                 "source": {"kind": "fallback"}}}
+            title_ev = {
+                "type": "session/title",
+                "seq": seq,
+                "time": now_ms,
+                "data": {
+                    "title": ir.session.title[:120],
+                    "messageSeqs": [first_user_seq],
+                    "source": {"kind": "fallback"},
+                },
+            }
             lines.append(json.dumps(title_ev, ensure_ascii=False))
 
         target_dir = _root() / _project_key(cwd) / sid
         target_dir.mkdir(parents=True, exist_ok=True)
         path = target_dir / "session.jsonl.zstd"
         tmp = path.with_suffix(".tmp")
-        frames = [(line + "\n").encode("utf-8") for line in lines]  # one frame per JSON line
+        frames = [
+            (line + "\n").encode("utf-8") for line in lines
+        ]  # one frame per JSON line
         tmp.write_bytes(_zstd_compress_frames(frames))
         os.replace(tmp, path)
 
         if self._meta_from_log(path, sid) is None:
             path.unlink(missing_ok=True)
-            raise CafxError(_t("DSH write verification failed; rolled back", "DSH 写入校验失败，已回滚"))
-        self.invalidate()
+            raise CafError("DSH write verification failed; rolled back")
         return sid

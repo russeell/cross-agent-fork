@@ -6,15 +6,12 @@ import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
-
-from caf.i18n import t as _t
 
 
-class CafxError(Exception):
-    """Actionable error with a next-step hint (uv/cargo style)."""
+class CafError(Exception):
+    """Actionable error with a next-step hint."""
 
-    def __init__(self, message: str, hint: Optional[str] = None):
+    def __init__(self, message: str, hint: str | None = None):
         super().__init__(message)
         self.hint = hint
 
@@ -26,12 +23,11 @@ class CafxError(Exception):
 class ToolSummary:
     name: str
     status: str = "ok"
-    file: Optional[str] = None
+    file: str | None = None
 
 
 @dataclass
 class Turn:
-    seq: int
     role: str  # "user" | "assistant"
     text: str
     tools: list[ToolSummary] = field(default_factory=list)
@@ -42,12 +38,10 @@ class SessionMeta:
     provider_id: str
     session_id: str
     title: str = ""
-    project_dir: Optional[str] = None
-    source_path: Optional[str] = None
+    project_dir: str | None = None
+    source_path: str | None = None
     turns: int = 0
-    created_at: float = 0.0
     last_active_at: float = 0.0
-    parent_ref: Optional[str] = None  # native lineage: e.g. "codex:<id>" / "cc:<id>" / "dsh:session-..."
 
 
 @dataclass
@@ -85,36 +79,6 @@ def read_jsonl(path: Path):
                 continue
 
 
-def disp_width(text: str) -> int:
-    """Display width: CJK and other full-width chars count as 2 (dependency-free wcwidth)."""
-    return sum(2 if ord(ch) > 0x2E7F else 1 for ch in text)
-
-
-def truncate(text: str, width: int = 34) -> str:
-    """Truncate by display width: collapse whitespace, append '...' (threads.title may be a full first message)."""
-    text = " ".join(text.split())
-    if disp_width(text) <= width:
-        return text
-    out = ""
-    used = 0
-    for ch in text:
-        cw = 2 if ord(ch) > 0x2E7F else 1
-        if used + cw > width - 1:
-            break
-        out += ch
-        used += cw
-    return out + "…"
-
-
-def encode_cwd(path: str) -> str:
-    """Claude Code project-dir encoding (verified): ASCII alnum kept, every other char -> '-'.
-
-    Verified: /Users/russeell/Documents/开源项目开发/jobfindsme
-      -> -Users-russeell-Documents--------jobfindsme (one '-' per CJK char)
-    """
-    return "".join(ch if (ch.isascii() and ch.isalnum()) else "-" for ch in path)
-
-
 def parse_session_ref(ref: str, adapters) -> tuple[str, str]:
     """'cc:9f3a' / 'codex:last' -> (agent_id, sid); bare ids auto-detect the owner (ambiguity -> error)."""
     if ":" in ref:
@@ -128,18 +92,18 @@ def parse_session_ref(ref: str, adapters) -> tuple[str, str]:
         if adapter.find_session(ref):
             found.append(adapter)
     if len(found) > 1:
-        raise CafxError(
-            _t(f"Session id {ref} matches multiple agents", f"会话 id {ref} 匹配到多个 agent"),
-            hint=_t("Use the agent: prefix (e.g. cc:<id>)", "请带 agent 前缀（如 cc:<id>）"),
+        raise CafError(
+            f"Session id {ref} matches multiple agents",
+            hint="Use the agent: prefix (e.g. cc:<id>)",
         )
     if found:
         return found[0].agent_id, ref
-    raise CafxError(_t(f"Session not found: {ref}", f"未找到会话 {ref}"), hint="caf list --all")
+    raise CafError(f"Session not found: {ref}", hint="caf list --all")
 
 
-def pick_recent_session(adapters, project_dir: Optional[str] = None) -> Optional[SessionMeta]:
+def pick_recent_session(adapters, project_dir: str | None = None) -> SessionMeta | None:
     """Pick the most recent non-empty session; prefer project_dir when given (empty-session noise filter)."""
-    best: Optional[SessionMeta] = None
+    best: SessionMeta | None = None
     for adapter in adapters:
         scan = getattr(adapter, "scan_cached", adapter.scan_sessions)
         for meta in scan():
@@ -147,7 +111,7 @@ def pick_recent_session(adapters, project_dir: Optional[str] = None) -> Optional
                 continue
             if meta.project_dir and not os.path.isdir(meta.project_dir):
                 continue  # sessions whose working directory is gone cannot be forked
-                          # (the official importer requires cwd)
+                # (the official importer requires cwd)
             if project_dir is not None and meta.project_dir != project_dir:
                 continue
             if best is None or meta.last_active_at > best.last_active_at:
@@ -155,21 +119,13 @@ def pick_recent_session(adapters, project_dir: Optional[str] = None) -> Optional
     return best
 
 
-def slice_turns(turns: list[Turn], at: int, boundary: str = "through") -> tuple[list[Turn], Optional[str]]:
-    """Slice IR turns by user-message sequence (opencode before/through model).
-
-    - `--at N --through` (default): include user N and everything after it up to the next user
-    - `--at N --before`: stop strictly before user N (equivalent to through N-1)
-    - Unfinished turn N (no assistant after user N): through -> cut to the last complete turn + warn
-    Returns (sliced turns, warning or None).
-    """
+def slice_turns(turns: list[Turn], at: int) -> tuple[list[Turn], str | None]:
+    """Slice IR turns by user-message sequence: include user N and everything up to the next user.
+    An unfinished final turn is cut to the last complete turn with a warning."""
     if at < 1:
-        raise CafxError(_t(f"Invalid fork point: --at {at}", f"无效分叉点: --at {at}"),
-                        hint=_t("--at must be >= 1", "--at 必须 ≥ 1"))
-    if boundary == "before":
-        return slice_turns(turns, at - 1, "through") if at > 1 else _empty_slice(at, boundary)
+        raise CafError(f"Invalid fork point: --at {at}", hint="--at must be >= 1")
 
-    idx_user: Optional[int] = None
+    idx_user: int | None = None
     user_count = 0
     for i, turn in enumerate(turns):
         if turn.role == "user":
@@ -178,13 +134,12 @@ def slice_turns(turns: list[Turn], at: int, boundary: str = "through") -> tuple[
                 idx_user = i
                 break
     if idx_user is None:
-        raise CafxError(
-            _t(f"Turn {at} does not exist (session has {user_count} user messages)",
-              f"第 {at} 轮不存在（会话共 {user_count} 个用户消息）"),
-            hint=_t("Check turns with caf list", "caf list 查看轮数"),
+        raise CafError(
+            f"Turn {at} does not exist (session has {user_count} user messages)",
+            hint="Check turns with caf list",
         )
 
-    warning: Optional[str] = None
+    warning: str | None = None
     end = idx_user
     while end + 1 < len(turns) and turns[end + 1].role != "user":
         end += 1  # everything after user N up to the next user belongs to turn N
@@ -194,28 +149,16 @@ def slice_turns(turns: list[Turn], at: int, boundary: str = "through") -> tuple[
         while end >= 0 and turns[end].role != "assistant":
             end -= 1
         if end < 0:
-            raise CafxError(
-                _t(f"No completed turns before turn {at}", f"第 {at} 轮之前没有完成的轮次可 fork"),
-                hint=_t("Pick an earlier --at", "--at 换一个更早的分叉点"),
+            raise CafError(
+                f"No completed turns before turn {at}",
+                hint="Pick an earlier --at",
             )
-        warning = _t(f"Turn {at} is unfinished; truncated to turn {at - 1}",
-                    f"第 {at} 轮未完成，已截断到第 {at - 1} 轮")
+        warning = f"Turn {at} is unfinished; truncated to turn {at - 1}"
     return turns[: end + 1], warning
 
 
-def _empty_slice(at: int, boundary: str):
-    raise CafxError(_t(f"Empty result (--at {at} --{boundary})",
-                      f"结果为空（--at {at} --{boundary}）"),
-                    hint=_t("--at must be >= 1 (--before 1 has nothing to fork)",
-                           "--at 必须 ≥ 1（--before 1 无内容可 fork）"))
-
-
 def with_tool_lines(text: str, tools: list[ToolSummary]) -> str:
-    """Append tool summaries to a turn's text as one line per tool.
-
-    Canonical English tokens only: this text is written into the migrated session,
-    so it must never depend on the CLI's UI language (i18n stays in the presentation layer).
-    """
+    """Append tool summaries to a turn's text as one line per tool."""
     for tool in tools:
         line = f"[tool] {tool.name} · {tool.status}"
         if tool.file:

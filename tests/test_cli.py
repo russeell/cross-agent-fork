@@ -1,4 +1,4 @@
-"""CLI smoke tests: list / fork --dry-run / doctor (fixtures + env isolation)."""
+"""CLI smoke tests: list / fork / doctor / install-skill (fixtures + env isolation)."""
 
 import contextlib
 import io
@@ -12,7 +12,6 @@ from pathlib import Path
 from unittest import mock
 
 from caf.cli import main
-from caf.i18n import set_lang
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -39,34 +38,59 @@ def _run(argv: list[str], env_overrides: dict | None = None) -> tuple[int, str]:
 
 class CliTest(unittest.TestCase):
     def setUp(self):
-        set_lang("en")
         self.tmp = tempfile.mkdtemp()
         projects = Path(self.tmp) / "projects"
         (projects / "-tmp-fixture-proj").mkdir(parents=True)
-        shutil.copy(FIXTURES / "cc_sample.jsonl",
-                    projects / "-tmp-fixture-proj" / "00000000-0000-0000-0000-00000000aa01.jsonl")
+        shutil.copy(
+            FIXTURES / "cc_sample.jsonl",
+            projects
+            / "-tmp-fixture-proj"
+            / "00000000-0000-0000-0000-00000000aa01.jsonl",
+        )
         codex = Path(self.tmp) / "codex"
         (codex / "sessions" / "2026" / "08" / "01").mkdir(parents=True)
-        shutil.copy(FIXTURES / "codex_sample.jsonl",
-                    codex / "sessions" / "2026" / "08" / "01"
-                    / "rollout-2026-08-01T10-00-00-019e0000-0000-0000-0000-000000000001.jsonl")
+        shutil.copy(
+            FIXTURES / "codex_sample.jsonl",
+            codex
+            / "sessions"
+            / "2026"
+            / "08"
+            / "01"
+            / "rollout-2026-08-01T10-00-00-019e0000-0000-0000-0000-000000000001.jsonl",
+        )
         (codex / "session_index.jsonl").write_text(
-            json.dumps({"id": "019e0000-0000-0000-0000-000000000001",
-                        "thread_name": "OAuth 重构", "updated_at": 1}) + "\n",
+            json.dumps(
+                {
+                    "id": "019e0000-0000-0000-0000-000000000001",
+                    "thread_name": "OAuth 重构",
+                    "updated_at": 1,
+                }
+            )
+            + "\n",
             encoding="utf-8",
         )
-        Path("/tmp/fixture-proj").mkdir(parents=True, exist_ok=True)  # fixture 会话的 cwd
+        Path("/tmp/fixture-proj").mkdir(
+            parents=True, exist_ok=True
+        )  # fixture 会话的 cwd
         self.env = {
             "CAF_CC_PROJECTS": str(projects),
             "CAF_CODEX_HOME": str(codex),
-            "CAF_DSH_SESSIONS": str(Path(self.tmp) / "no-dsh"),  # isolate the real ~/.dsh
-            "CAF_LANG": "en",
+            "CAF_DSH_SESSIONS": str(
+                Path(self.tmp) / "no-dsh"
+            ),  # isolate the real ~/.dsh
+            "DSH_HOME": str(Path(self.tmp) / "no-dsh-home"),  # dsh not installed here
         }
         # fork tests exercise write_ready / resume paths; mock CLI presence so the
         # suite runs on CI without codex/claude installed
         self._cli_patches = [
             mock.patch("caf.adapters.codex._codex_bin", return_value="/usr/bin/codex"),
-            mock.patch("caf.adapters.claude.shutil.which", return_value="/usr/bin/claude"),
+            mock.patch(
+                "caf.adapters.claude.shutil.which", return_value="/usr/bin/claude"
+            ),
+            mock.patch(
+                "caf.adapters.codex.import_external_session",
+                return_value="019e-fake-thread",
+            ),
         ]
         for p in self._cli_patches:
             p.start()
@@ -92,15 +116,15 @@ class CliTest(unittest.TestCase):
         providers = {r["providerId"] for r in rows}
         self.assertEqual(providers, {"cc", "codex"})
 
-    def test_list_claude_flag(self):
-        code, out = _run(["list", "--claude", "--all"])
+    def test_list_agent_positional(self):
+        code, out = _run(["list", "claude", "--all"])
         self.assertEqual(code, 0)
         self.assertIn("cc:00000000", out)
         self.assertNotIn("codex:", out)
-        self.assertNotIn("codex v", out)  # 发现行只显示过滤后的 agent
 
     def test_list_default_shows_all(self):
         import caf.cli as cli_mod
+
         old = cli_mod._stdout_isatty
         cli_mod._stdout_isatty = lambda: True  # TTY：显示引导行
         code, out = _run(["list"])
@@ -129,6 +153,7 @@ class CliTest(unittest.TestCase):
 
     def test_list_limit_footer(self):
         import caf.cli as cli_mod
+
         old = cli_mod._stdout_isatty
         cli_mod._stdout_isatty = lambda: True
         projects = Path(os.environ["CAF_CC_PROJECTS"])
@@ -182,35 +207,33 @@ class CliTest(unittest.TestCase):
         )
         code, out = _run(["list", "claude"])
         self.assertEqual(code, 0)
-        self.assertNotIn("eeee0000", out)          # empty sessions hidden by default
+        self.assertNotIn("eeee0000", out)  # empty sessions hidden by default
         self.assertIn("hidden 1 empty sessions", out)
         code_all, out_all = _run(["list", "claude", "--all"])
-        self.assertIn("eeee0000", out_all)          # --all shows them
+        self.assertIn("eeee0000", out_all)  # --all shows them
 
-    def test_fork_dry_run(self):
-        code, out = _run(["fork", "cc:00000000", "--into", "codex", "--dry-run"])
+    def test_fork_writes(self):
+        code, out = _run(["fork", "cc:00000000", "--into", "codex"])
         self.assertEqual(code, 0)
-        self.assertIn("Preview:", out)
-        self.assertIn("codex resume <new-id>", out)
+        self.assertIn("Forked: cc:00000000", out)
+        self.assertIn("codex resume 019e-fake-thread", out)
+        self.assertIn("Written: codex 019e-fak...", out)
 
     def test_fork_at_boundary(self):
-        code, out = _run(["fork", "cc:00000000", "--at", "1", "--into", "codex", "--dry-run"])
+        code, out = _run(["fork", "cc:00000000", "--at", "1", "--into", "codex"])
         self.assertEqual(code, 0)
         self.assertIn("1 user turn / 2 messages", out)  # u1 + a1
-        code_before, out_before = _run(
-            ["fork", "cc:00000000", "--at", "2", "--before", "--into", "codex", "--dry-run"])
-        self.assertEqual(code_before, 0)
-        self.assertIn("1 user turn / 2 messages", out_before)  # before 2 = through 1
+        self.assertIn("@1", out)
 
     def test_fork_at_out_of_range(self):
-        code, out = _run(["fork", "cc:00000000", "--at", "99", "--into", "codex", "--dry-run"])
+        code, out = _run(["fork", "cc:00000000", "--at", "99", "--into", "codex"])
         self.assertEqual(code, 1)
         self.assertIn("Error", out)
         self.assertIn("try", out)
 
     def test_fork_at_zero_rejected(self):
         """--at 0 must error like --at < 0, not silently fork the whole session."""
-        code, out = _run(["fork", "cc:00000000", "--at", "0", "--into", "codex", "--dry-run"])
+        code, out = _run(["fork", "cc:00000000", "--at", "0", "--into", "codex"])
         self.assertEqual(code, 1)
         self.assertIn("Invalid fork point", out)
 
@@ -223,43 +246,53 @@ class CliTest(unittest.TestCase):
     def test_fork_default_source_deterministic(self):
         """No ref: current-cwd first, then most recent; never the target agent."""
         import caf.cli as cli_mod
+
         old = cli_mod._stdin_isatty
         cli_mod._stdin_isatty = lambda: False
         try:
-            code, out = _run(["fork", "--into", "codex", "--dry-run"])
+            code, out = _run(["fork", "--into", "codex"])
         finally:
             cli_mod._stdin_isatty = old
         self.assertEqual(code, 0)
-        self.assertIn("Preview: cc:00000000", out)  # codex excluded as target -> cc source
-        self.assertIn("codex resume <new-id>", out)
+        self.assertIn(
+            "Forked: cc:00000000", out
+        )  # codex excluded as target -> cc source
+        self.assertIn("codex resume 019e-fake-thread", out)
 
     def test_pick_session_rejects_zero_and_out_of_range(self):
         """Interactive picker: 0 must not wrap to the last session."""
         import caf.cli as cli_mod
-        from caf.core import CafxError, SessionMeta
+        from caf.core import CafError, SessionMeta
+
         rows = [SessionMeta("cc", "s1", turns=1), SessionMeta("cc", "s2", turns=1)]
         for bad in ("0", "3", "99"):
-            with self.assertRaises(CafxError):
+            with self.assertRaises(CafError):
                 cli_mod._pick_session(rows, bad)
         self.assertEqual(cli_mod._pick_session(rows, "2").session_id, "s2")
 
     def test_fork_into_alias_excludes_canonical_agent(self):
         """--into claude must exclude agent_id "cc" from source candidates."""
-        code, out = _run(["fork", "--into", "claude", "--dry-run"])
+        code, out = _run(["fork", "--into", "claude"])
         self.assertEqual(code, 0)
-        self.assertIn("Preview: codex:019e0000", out)  # cc excluded as target -> codex source
-        self.assertIn("claude --resume <new-id>", out)
+        self.assertIn(
+            "Forked: codex:019e0000", out
+        )  # cc excluded as target -> codex source
+        self.assertIn("claude --resume", out)
 
     def test_fork_target_works_without_read_store(self):
         """A freshly installed agent (no read store yet) can still be a fork target."""
         from unittest import mock
-        with mock.patch("caf.adapters.claude.shutil.which", return_value="/usr/bin/claude"):
+
+        with mock.patch(
+            "caf.adapters.claude.shutil.which", return_value="/usr/bin/claude"
+        ):
             code, out = _run(
-                ["fork", "codex:019e0000", "--into", "claude", "--dry-run"],
+                ["fork", "codex:019e0000", "--into", "claude"],
                 env_overrides={"CAF_CC_PROJECTS": str(Path(self.tmp) / "no-cc-store")},
             )
         self.assertEqual(code, 0)
-        self.assertIn("claude --resume <new-id>", out)
+        self.assertIn("claude --resume", out)
+        self.assertIn("Forked: codex:019e0000", out)
 
     def test_resolve_target_skips_write_unavailable(self):
         """Target candidates must be write_ready; a read-only adapter is not offered."""
@@ -269,11 +302,13 @@ class CliTest(unittest.TestCase):
 
         class ReadOnly(Adapter):
             agent_id = "ro"
+
             def write_ready(self):
                 return False
 
         class Writable(Adapter):
             agent_id = "wr"
+
             def write_ready(self):
                 return True
 
@@ -291,9 +326,12 @@ class CliTest(unittest.TestCase):
         """The CLI process must exit non-zero on errors (not swallow main()'s return code)."""
         import subprocess
         import sys
+
         proc = subprocess.run(
             [sys.executable, "-m", "caf", "fork", "cc:zzzz", "--into", "codex"],
-            capture_output=True, text=True, env=os.environ,
+            capture_output=True,
+            text=True,
+            env=os.environ,
         )
         self.assertEqual(proc.returncode, 1)
         self.assertIn("Error", proc.stdout)
@@ -302,12 +340,15 @@ class CliTest(unittest.TestCase):
         """Non-TTY fork with several target agents must fail loudly, never silently pick one."""
         import caf.cli as cli_mod
         from caf.adapters import Adapter
-        from caf.core import CafxError, SessionMeta
+        from caf.core import CafError, SessionMeta
 
         class FakeAdapter(Adapter):
             agent_id = "codex"
 
-            def detect(self):
+            def read_ready(self):
+                return True
+
+            def write_ready(self):
                 return True
 
             def scan_sessions(self):
@@ -317,7 +358,7 @@ class CliTest(unittest.TestCase):
         old = cli_mod._stdin_isatty
         cli_mod._stdin_isatty = lambda: False
         try:
-            with self.assertRaises(CafxError) as ctx:
+            with self.assertRaises(CafError) as ctx:
                 cli_mod._resolve_target(adapters, SessionMeta("cc", "s1"), None)
         finally:
             cli_mod._stdin_isatty = old
@@ -333,7 +374,7 @@ class CliTest(unittest.TestCase):
             agent_id = "count"
             calls = 0
 
-            def detect(self):
+            def read_ready(self):
                 return True
 
             def scan_sessions(self):
@@ -354,17 +395,20 @@ class CliTest(unittest.TestCase):
         agents = {a["agent"] for a in data["agents"]}
         self.assertEqual(agents, {"claude", "codex", "deepseek-harness"})
         status = {a["agent"]: a["read"] for a in data["agents"]}
-        self.assertEqual(status, {"claude": "ok", "codex": "ok", "deepseek-harness": "off"})
+        self.assertEqual(
+            status, {"claude": "ok", "codex": "ok", "deepseek-harness": "off"}
+        )
 
     def test_install_skill_codex(self):
         """install-skill copies the bundled skill into the agent's skills dir (idempotent)."""
         agents_dir = str(Path(self.tmp) / "agents-skills")
-        code, out = _run(["install-skill", "codex"], env_overrides={"CAF_AGENTS_DIR": agents_dir})
+        code, out = _run(
+            ["install-skill", "codex"], env_overrides={"CAF_AGENTS_DIR": agents_dir}
+        )
         self.assertEqual(code, 0)
         self.assertIn("installed", out)
         dst = Path(agents_dir) / "caf"
         self.assertTrue((dst / "SKILL.md").is_file())
-        self.assertTrue((dst / "references" / "list.md").is_file())
         # idempotent reinstall
         code2, _ = _run(["install-skill"], env_overrides={"CAF_AGENTS_DIR": agents_dir})
         self.assertEqual(code2, 0)
@@ -374,35 +418,27 @@ class CliTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("Unsupported", out)
 
-    def test_output_language_follows_env(self):
-        code_zh, out_zh = _run(["list", "claude"], env_overrides={"CAF_LANG": "zh"})
-        self.assertEqual(code_zh, 0)
-        self.assertIn("会话", out_zh)
-        self.assertIn("发现", out_zh)
-        code_en, out_en = _run(["list", "claude"], env_overrides={"CAF_LANG": "en"})
-        self.assertEqual(code_en, 0)
-        self.assertIn("Session", out_en)
-        self.assertNotIn("会话", out_en)
-
     def test_fork_interactive_prefix_selection(self):
-        """Interactive mode: id-prefix source pick -> confirm -> dry-run (stdin + isatty injection)."""
+        """Interactive mode: id-prefix source pick -> confirm -> real fork (stdin + isatty injection)."""
         import caf.cli as cli_mod
 
-        feed = io.StringIO("019e0000\n1\n\n")  # source pick, target pick (claude), confirm
+        feed = io.StringIO(
+            "019e0000\n\n"
+        )  # source pick, confirm (dsh not write-ready here)
         out = io.StringIO()
         old_stdin, old_isatty = sys.stdin, cli_mod._stdin_isatty
         sys.stdin = feed
         cli_mod._stdin_isatty = lambda: True
         try:
             with contextlib.redirect_stdout(out):
-                code = cli_mod.main(["fork", "--dry-run"])
+                code = cli_mod.main(["fork"])
         finally:
             sys.stdin = old_stdin
             cli_mod._stdin_isatty = old_isatty
         self.assertEqual(code, 0)
         text = out.getvalue()
-        self.assertIn("Preview: codex:019e0000", text)
-        self.assertIn("claude --resume <new-id>", text)
+        self.assertIn("Forked: codex:019e0000", text)
+        self.assertIn("claude --resume", text)
 
 
 if __name__ == "__main__":

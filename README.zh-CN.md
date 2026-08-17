@@ -18,15 +18,13 @@ caf fork cc:last --into codex
 
 ## 安装
 
-在你想用的 agent 对话里粘贴这段：
-
-> 帮我安装 cross-agent-fork：
-> https://raw.githubusercontent.com/russeell/cross-agent-fork/main/docs/install.md
-
-agent 会读取安装指南，帮你装好 CLI 和 skill。手动安装即：
-
 ```bash
 pipx install git+https://github.com/russeell/cross-agent-fork.git
+```
+
+想在 agent（Codex / Claude Code）里用 caf，再装 skill：
+
+```bash
 caf install-skill          # codex（默认）；或: caf install-skill claude
 ```
 
@@ -68,9 +66,7 @@ caf fork cc:last --at 12 --into codex
 
 ## 附加能力
 
-- **Agent 集成（skills）** — `caf install-skill codex`（或 `claude`）自动安装随包携带的 skill；skill 会按你的输入语言自动传 `--lang`。
-- **`caf tree`** — 基于各 agent 原生元数据的 best-effort 跨 agent 谱系。
-- **`caf mcp`** — stdio MCP server（legacy 协议），供桌面/聊天客户端调用。
+- **Agent 集成（skills）** — `caf install-skill codex`（或 `claude`）自动安装随包携带的 skill；装完后直接说"把当前会话 fork 到 Codex"即可。
 
 ## 工作原理
 
@@ -80,12 +76,16 @@ Claude Code 和 DeepSeek Harness 走薄信封。`caf` 自己不维护数据库�
 ## 局限
 
 - 只搬运文本轮次和工具摘要；配置、权限、附件、git 状态不迁移。
-- 谱系（`caf tree`）是 best-effort，取决于各目标 agent 保留了哪些元数据。
 
 ## 贡献 / 新增 agent
 
-Adapter 是轻量的读写模块——见 [docs/PORTING.md](docs/PORTING.md)。设计细节在
-[specs/](specs/)，愿景与边界在 [docs/VISION.md](docs/VISION.md)。
+Adapter 是轻量的读写模块——见 [docs/PORTING.md](docs/PORTING.md)。
+
+## 非目标
+
+- 不做 GUI/TUI、记忆层、工作区管理、云同步
+- 不做同 agent fork（用原生）、配置迁移
+- 不承诺今天三个 agent 之外的能力——新 agent 通过 adapter 加入
 
 ## License
 

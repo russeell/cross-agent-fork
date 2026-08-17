@@ -5,46 +5,37 @@ description: Cross-agent session fork — use when the user wants to switch agen
 
 # caf — cross-agent session fork
 
-`caf` turns the **entire session** of one agent into a resumable session line in another agent; the original session is never modified.
-
-**Language**: run `caf --lang <en|zh>` matching the user's input language — Chinese input -> `--lang zh` (Chinese output), English input -> `--lang en` (English output). Without a flag, `caf` follows `CAF_LANG` then the system locale.
+`caf` turns the session of one agent into a resumable session in another agent; the
+original session is never modified.
 
 ## When to use
 
-- User says "fork the current session to Codex / Claude Code", "switch to X and continue", "rate-limited, switch tools" -> fork
-- User asks "what sessions are there" -> list
-- Fork failed or the user asks to check the environment -> doctor
+- "fork the current session to Codex / Claude Code", "switch to X and continue",
+  "rate-limited, switch tools" -> fork
+- "what sessions are there" -> list
+- fork failed or "check the environment" -> doctor
 
-## Workflow
-
-### fork (core)
+## Commands
 
 ```bash
-caf fork --into <target>          # picks the most recent session in the current directory
+caf fork --into <target>          # most recent session in the current directory
 caf fork cc:last --into codex     # explicit source
-caf fork <agent>:<id> --into cc   # specific session
-caf fork cc:9f3a --at 12 --into codex  # fork at turn 12 (arbitrary boundary)
+caf fork codex:01J7 --into claude # specific session
+caf fork cc:9f3a --at 12 --into codex  # fork through turn 12
+caf list [claude|codex|dsh] [-s keyword] [--all]
+caf doctor
 ```
 
-After running:
+## After a fork
 
-1. Show the output to the user, **highlight the final `→ 继续:` line**
-2. The last line is already the action to take — **execute it yourself**:
-   - `open http://...` (dsh web target): run it — opening the GUI is safe and expected
-   - `cd <project> && <agent> resume <id>` (claude / codex / dsh-tui): ask first — starting an
-     interactive TUI uninvited interrupts the user
-3. On confirmation (or for the GUI), run the command and confirm the session shows up
-
-### list / doctor
-
-```bash
-caf list            # session list
-caf doctor          # health check and fix suggestions
-```
-
-Full rendering rules: see `references/list.md`, `references/fork.md`, `references/doctor.md`.
+1. Show the output, highlight the final `-> resume:` line.
+2. Execute it yourself: an `open http://...` line (dsh web) is safe to run immediately;
+   interactive CLI resumes (`claude --resume`, `codex resume`) need the user's go-ahead
+   — never start an interactive agent uninvited.
+3. Confirm the session shows up.
 
 ## Notes
 
-- Only fork sessions the user explicitly asks for; never fork proactively
-- Forking does not migrate config/permissions/env vars — the target agent uses its own
+- Only fork sessions the user explicitly asks for; never fork proactively.
+- Config/permissions/env are not migrated; the target agent uses its own.
+- `caf list` output is a plain-text table; in chat, render it as a Markdown table.

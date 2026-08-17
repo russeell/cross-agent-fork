@@ -19,19 +19,17 @@ caf fork cc:last --into codex
 
 ## Install
 
-Paste this into the agent you want to use it in:
-
-> Install cross-agent-fork:
-> https://raw.githubusercontent.com/russeell/cross-agent-fork/main/docs/install.md
-
-The agent reads the guide and installs the CLI plus its skill for you. Manually, that is:
-
 ```bash
 pipx install git+https://github.com/russeell/cross-agent-fork.git
+```
+
+To use caf inside an agent (Codex / Claude Code), install the skill too:
+
+```bash
 caf install-skill          # codex (default); or: caf install-skill claude
 ```
 
-Once installed, just say "fork the current session into Codex" in that agent.
+Then just say "fork the current session into Codex" in that agent.
 
 ## Quick start
 
@@ -72,9 +70,7 @@ caf fork cc:last --at 12 --into codex
 ## Extras
 
 - **Agent integration (skills)** — `caf install-skill codex` (or `claude`) installs the
-  bundled skill; the skill passes your input language to `caf --lang` automatically.
-- **`caf tree`** — best-effort lineage across agents, from metadata each target preserves.
-- **`caf mcp`** — stdio MCP server (legacy protocol) for desktop/chat clients.
+  bundled skill; then just say "fork the current session into Codex" in that agent.
 
 ## How it works
 
@@ -87,12 +83,16 @@ sessions.
 
 - Text turns and tool summaries are carried; config, permissions, attachments, and git
   state are not migrated.
-- Lineage (`caf tree`) is best-effort and depends on what each target agent preserves.
 
 ## Contributing / adding an agent
 
-Adapters are small read/write modules — see [docs/PORTING.md](docs/PORTING.md). Design
-details live in [specs/](specs/), vision and boundaries in [docs/VISION.md](docs/VISION.md).
+Adapters are small read/write modules — see [docs/PORTING.md](docs/PORTING.md).
+
+## Non-goals
+
+- No GUI/TUI, no memory layer, no workspace management, no cloud sync
+- No same-agent forks (use the agent's native fork), no config migration
+- No claims beyond today's three agents — new agents arrive through adapters
 
 ## License
 

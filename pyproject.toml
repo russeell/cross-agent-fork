@@ -16,7 +16,7 @@ dependencies = ["zstandard"]
 caf = "caf.cli:main"
 
 [tool.setuptools]
-packages = ["caf", "caf.adapters", "caf.plugins"]
+packages = ["caf", "caf.adapters"]
 
 [tool.setuptools.package-data]
-caf = ["skills/caf/SKILL.md", "skills/caf/references/*.md"]
+caf = ["skills/caf/SKILL.md"]
