@@ -16,7 +16,7 @@ class Adapter:
     def store_path(self) -> str     # shown by doctor
     def store_version(self) -> str  # version, or "" when unknown
     def scan_sessions(self) -> list[SessionMeta]
-    def load_session(self, sid) -> SessionIR   # text turns + tool summaries
+    def load_session(self, sid) -> SessionIR   # text turns + tool evidence
     def resume_command(self, sid, project_dir) -> str
     def write(self, ir) -> str      # native session, returns the new session id
 ```
@@ -26,20 +26,38 @@ class Adapter:
 Use the agent's official import API when one exists (Codex: external-agent import).
 Otherwise write a thin file-level envelope (Claude Code JSONL, DSH zstd JSONL).
 
-## Invariants
+## Fork contract
 
-1. Never modify the source session.
-2. The write product must be natively discoverable and resumable by the target.
-3. Keep all text turns and tool summary lines.
-4. Only touch sessions caf itself created (no overwrite of foreign files).
-5. Write atomically (temp + rename) and verify by reading back; roll back on failure.
+Every adapter must honor the fork semantics, not just the file format:
+
+1. **Source immutable** — never modify the source session.
+2. **New target identity** — the write product is a new session, never a rewrite.
+3. **Native target resume** — the product must be natively discoverable and resumable.
+4. **Same cwd** — the fork carries the source's working directory; never invent one
+   (a session with unknown cwd is not forkable).
+5. **Exact fork point** — `--at N` forks exactly through turn N; an unfinished turn
+   fails loudly instead of silently moving the boundary.
+6. **Portable evidence preserved** — user/assistant text plus tool call/result evidence
+   survive the crossing; tool status is observed, never guessed ("unknown" until proven).
+7. **No invented state** — write atomically (temp + rename), verify by reading back,
+   roll back on failure, and only touch sessions caf itself created.
 
 ## Acceptance (marker test)
 
-1. Plant a marker phrase in turn 3 of a source-agent session.
-2. `caf fork <src> --into <new-agent>`.
-3. Resume with the target agent and ask for the marker.
-4. A correct answer passes: context survived the crossing.
+Plant two markers in a source-agent session:
+
+- `TEXT_MARKER` in a user message
+- `TOOL_MARKER` inside a tool result (e.g. have the agent read a file containing it)
+
+Then:
+
+1. `caf fork <src> --into <new-agent>` — target must know `TEXT_MARKER` **and**
+   `TOOL_MARKER`, and the cwd must match the source.
+2. The source session hash is unchanged.
+3. `caf fork <src> --at N` — target knows markers before N and nothing after
+   (a `LATE_MARKER` placed after N must be unknown).
+
+A correct answer means the fork (not just the parser) survived.
 
 ## Format traps (learned the hard way)
 

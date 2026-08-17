@@ -66,7 +66,18 @@ class RpcClient:
             self.proc.terminate()
             self.proc.wait(timeout=5)
         except Exception:
-            self.proc.kill()
+            try:
+                self.proc.kill()
+                self.proc.wait(timeout=5)
+            except Exception:
+                pass
+        finally:
+            for stream in (self.proc.stdin, self.proc.stdout, self.proc.stderr):
+                try:
+                    if stream:
+                        stream.close()
+                except Exception:
+                    pass
 
     # -- internals
 

@@ -18,18 +18,23 @@ original session is never modified.
 ## Commands
 
 ```bash
-caf fork --into <target>          # most recent session in the current directory
-caf fork cc:last --into codex     # explicit source
-caf fork codex:01J7 --into claude # specific session
+# inside an agent, ALWAYS name the source explicitly (your own harness first):
+caf fork cc:last --into codex     # inside Claude Code
+caf fork codex:last --into claude # inside Codex
+caf fork dsh:last --into codex    # inside DeepSeek Harness
 caf fork cc:9f3a --at 12 --into codex  # fork through turn 12
 caf list [claude|codex|dsh] [-s keyword] [--all]
 caf doctor
 ```
 
+Bare `caf fork --into <target>` is for terminals: it picks the most recent session in
+the current directory (excluding the target agent).
+
 ## After a fork
 
-Show the result and the final `-> resume:` command to the user. Do not start the
-target agent unless the user asks.
+Show the result and the final `→ resume:` command to the user. For a DSH web target,
+explain that the command opens the local session list; it is not an exact deep link.
+Do not start the target agent unless the user asks.
 
 ## Notes
 

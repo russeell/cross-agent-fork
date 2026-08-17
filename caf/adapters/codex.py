@@ -15,7 +15,15 @@ from uuid import uuid4
 from caf._rpc import RpcClient
 from caf import __version__
 from caf.adapters import Adapter
-from caf.core import CafError, SessionIR, SessionMeta, Turn, atomic_write, read_jsonl
+from caf.core import (
+    CafError,
+    SessionIR,
+    SessionMeta,
+    ToolEvidence,
+    Turn,
+    atomic_write,
+    read_jsonl,
+)
 
 
 def _codex_home() -> Path:
@@ -140,6 +148,37 @@ def _iter_messages(ev: dict) -> Optional[tuple[str, str]]:
     elif t in ("user_message", "assistant_message"):
         text = _payload_text(p)
         return ("user" if t == "user_message" else "assistant", text) if text else None
+    return None
+
+
+def _iter_tool_events(ev: dict) -> tuple[str, dict] | None:
+    """(call|output, payload) from one event: modern response_item or legacy events."""
+    t = ev.get("type")
+    p = ev.get("payload") or {}
+    if t == "response_item" and p.get("type") == "function_call":
+        return "call", {
+            "name": str(p.get("name", "tool")),
+            "call_id": str(p.get("call_id", "")),
+            "arguments": str(p.get("arguments", "") or ""),
+        }
+    if t == "response_item" and p.get("type") == "function_call_output":
+        return "output", {
+            "call_id": str(p.get("call_id", "")),
+            "output": _payload_text(p) or str(p.get("output", "") or ""),
+            "is_error": bool(p.get("is_error")),
+        }
+    if t == "function_call":
+        return "call", {
+            "name": str(p.get("name", "tool")),
+            "call_id": str(p.get("call_id", "")),
+            "arguments": str(p.get("arguments", "") or ""),
+        }
+    if t == "function_call_output":
+        return "output", {
+            "call_id": str(p.get("call_id", "")),
+            "output": _payload_text(p) or str(p.get("output", "") or ""),
+            "is_error": bool(p.get("is_error")),
+        }
     return None
 
 
@@ -349,7 +388,39 @@ class CodexAdapter(Adapter):
                 msg = _iter_messages(ev)
                 if msg:
                     role, text = msg
-                    turns.append(Turn(role, text))
+                    if (
+                        role == "assistant"
+                        and turns
+                        and turns[-1].role == "assistant"
+                        and not turns[-1].text
+                        and turns[-1].tools
+                    ):
+                        # Some Codex rollouts emit function_call before the textual
+                        # assistant item. Keep both in the same portable turn.
+                        turns[-1].text = text
+                    else:
+                        turns.append(Turn(role, text))
+                    continue
+                tool = _iter_tool_events(ev)
+                if not tool:
+                    continue
+                kind, data = tool
+                if kind == "call":
+                    if not turns or turns[-1].role != "assistant":
+                        turns.append(Turn("assistant", ""))
+                    turns[-1].tools.append(
+                        ToolEvidence(
+                            name=data["name"],
+                            call_id=data["call_id"],
+                            arguments=data["arguments"],
+                        )
+                    )
+                elif turns and turns[-1].role == "assistant":
+                    for existing in reversed(turns[-1].tools):
+                        if existing.call_id == data["call_id"]:
+                            existing.result = data["output"]
+                            existing.status = "error" if data["is_error"] else "ok"
+                            break
         return SessionIR(meta, turns)
 
     def _files_for_session(self, sid: str) -> list[Path]:
@@ -378,9 +449,12 @@ class CodexAdapter(Adapter):
             mirror = _bridge_cc_mirror(ir)
             source = mirror
         try:
-            new_id = import_external_session(
-                source, ir.session.project_dir or os.getcwd()
-            )
+            cwd = ir.session.project_dir
+            if not cwd or not os.path.isdir(cwd):
+                raise CafError(
+                    "Cannot fork: source working directory is unknown or does not exist."
+                )
+            new_id = import_external_session(source, cwd)
         finally:
             if mirror:
                 try:

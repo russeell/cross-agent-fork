@@ -215,9 +215,17 @@ class CliTest(unittest.TestCase):
     def test_fork_writes(self):
         code, out = _run(["fork", "cc:00000000", "--into", "codex"])
         self.assertEqual(code, 0)
-        self.assertIn("Forked: cc:00000000", out)
+        self.assertIn("✓ cc:00000000 → codex:", out)
         self.assertIn("codex resume 019e-fake-thread", out)
-        self.assertIn("Written: codex 019e-fak...", out)
+        self.assertIn("source unchanged", out)
+
+    def test_fork_json_uses_user_turns_and_messages(self):
+        code, out = _run(["fork", "cc:00000000", "--into", "codex", "--json"])
+        self.assertEqual(code, 0)
+        data = json.loads(out)
+        self.assertEqual(data["user_turns"], 2)
+        self.assertEqual(data["messages"], 4)
+        self.assertNotIn("turns", data)
 
     def test_fork_at_boundary(self):
         code, out = _run(["fork", "cc:00000000", "--at", "1", "--into", "codex"])
@@ -255,7 +263,7 @@ class CliTest(unittest.TestCase):
             cli_mod._stdin_isatty = old
         self.assertEqual(code, 0)
         self.assertIn(
-            "Forked: cc:00000000", out
+            "✓ cc:00000000 → codex:", out
         )  # codex excluded as target -> cc source
         self.assertIn("codex resume 019e-fake-thread", out)
 
@@ -275,7 +283,7 @@ class CliTest(unittest.TestCase):
         code, out = _run(["fork", "--into", "claude"])
         self.assertEqual(code, 0)
         self.assertIn(
-            "Forked: codex:019e0000", out
+            "✓ codex:019e0000 → cc:", out
         )  # cc excluded as target -> codex source
         self.assertIn("claude --resume", out)
 
@@ -292,7 +300,7 @@ class CliTest(unittest.TestCase):
             )
         self.assertEqual(code, 0)
         self.assertIn("claude --resume", out)
-        self.assertIn("Forked: codex:019e0000", out)
+        self.assertIn("✓ codex:019e0000 → cc:", out)
 
     def test_resolve_target_skips_write_unavailable(self):
         """Target candidates must be write_ready; a read-only adapter is not offered."""
@@ -321,6 +329,19 @@ class CliTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("Error", out)
         self.assertIn("try", out)
+
+    def test_fork_unknown_cwd_is_rejected(self):
+        projects = Path(os.environ["CAF_CC_PROJECTS"])
+        d = projects / "-unknown-cwd"
+        d.mkdir(parents=True, exist_ok=True)
+        sid = "unknown0000-0000-0000-0000-000000000000"
+        (d / f"{sid}.jsonl").write_text(
+            '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"no cwd"}]}}\n',
+            encoding="utf-8",
+        )
+        code, out = _run(["fork", f"cc:{sid}", "--into", "codex"])
+        self.assertEqual(code, 1)
+        self.assertIn("working directory is unknown", out)
 
     def test_process_exit_code_nonzero_on_error(self):
         """The CLI process must exit non-zero on errors (not swallow main()'s return code)."""
@@ -394,7 +415,7 @@ class CliTest(unittest.TestCase):
         data = json.loads(out)
         agents = {a["agent"] for a in data["agents"]}
         self.assertEqual(agents, {"claude", "codex", "deepseek-harness"})
-        status = {a["agent"]: a["read"] for a in data["agents"]}
+        status = {a["agent"]: a["from"] for a in data["agents"]}
         self.assertEqual(
             status, {"claude": "ok", "codex": "ok", "deepseek-harness": "off"}
         )
@@ -437,7 +458,7 @@ class CliTest(unittest.TestCase):
             cli_mod._stdin_isatty = old_isatty
         self.assertEqual(code, 0)
         text = out.getvalue()
-        self.assertIn("Forked: codex:019e0000", text)
+        self.assertIn("✓ codex:019e0000 → cc:", text)
         self.assertIn("claude --resume", text)
 
 

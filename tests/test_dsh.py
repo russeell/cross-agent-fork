@@ -1,4 +1,4 @@
-"""DSH plugin tests: projectKey encoding, real-format reads, write round-trip."""
+"""DSH adapter tests: projectKey encoding, real-format reads, write round-trip."""
 
 import os
 import shutil
@@ -7,15 +7,16 @@ import unittest
 from pathlib import Path
 
 from caf.adapters import discover_adapters
-from caf.core import SessionIR, SessionMeta, ToolSummary, Turn
-from caf.adapters.dsh import DshAdapter, _file_from_args, _project_key
+from caf.core import CafError, SessionIR, SessionMeta, ToolEvidence, Turn
+from caf.adapters.dsh import DshAdapter, _argument_text, _project_key
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
-class DshPluginTest(unittest.TestCase):
+class DshAdapterTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
+        Path("/tmp/fixture-proj").mkdir(parents=True, exist_ok=True)
         os.environ["CAF_DSH_SESSIONS"] = str(Path(self.tmp) / "sessions")
         os.environ["DSH_HOME"] = str(Path(self.tmp) / "dsh-home")
         (Path(os.environ["DSH_HOME"]) / "profiles" / "tui").mkdir(parents=True)
@@ -50,11 +51,8 @@ class DshPluginTest(unittest.TestCase):
         # a trailing slash adds one '-' (matching the DSH implementation)
         self.assertEqual(_project_key("/tmp/a/"), "--tmp-a---")
 
-    def test_file_from_args_dict_and_str(self):
-        self.assertEqual(_file_from_args('{"file_path": "src/a.py"}'), "src/a.py")
-        self.assertEqual(_file_from_args({"path": "src/b.py"}), "src/b.py")
-        self.assertIsNone(_file_from_args({"cmd": "ls"}))
-        self.assertIsNone(_file_from_args("not-json"))
+    def test_tool_arguments_dict_is_json(self):
+        self.assertEqual(_argument_text({"path": "src/b.py"}), '{"path": "src/b.py"}')
 
     def test_discovery_includes_plugin(self):
         names = {a.agent_id for a in discover_adapters()}
@@ -84,19 +82,18 @@ class DshPluginTest(unittest.TestCase):
         self.assertEqual(ir.turns[0].role, "user")
         self.assertIn("PKCE", ir.turns[0].text)
         self.assertEqual(ir.turns[1].tools[0].name, "Read")
-        self.assertEqual(ir.turns[1].tools[0].file, "src/auth.py")
+        self.assertIn("src/auth.py", ir.turns[1].tools[0].arguments)
+        self.assertEqual(ir.turns[1].tools[0].result, "...")
 
     def test_write_roundtrip(self):
         adapter = DshAdapter()
+        project = Path(self.tmp) / "中文项目"
+        project.mkdir(parents=True, exist_ok=True)
         ir = SessionIR(
-            SessionMeta(
-                "cc", "9f3a12", title="OAuth 重构", project_dir="/tmp/中文项目"
-            ),
+            SessionMeta("cc", "9f3a12", title="OAuth 重构", project_dir=str(project)),
             [
                 Turn("user", "把 OAuth 回调改成 PKCE 流程"),
-                Turn(
-                    "assistant", "完成", [ToolSummary("edit_file", "ok", "src/auth.py")]
-                ),
+                Turn("assistant", "完成", [ToolEvidence("edit_file", status="ok")]),
             ],
         )
         sid = adapter.write(ir)
@@ -105,21 +102,22 @@ class DshPluginTest(unittest.TestCase):
         meta = adapter.find_session(sid)
         self.assertIsNotNone(meta)
         self.assertEqual(meta.title, "OAuth 重构")
-        self.assertEqual(meta.project_dir, "/tmp/中文项目")
+        self.assertEqual(meta.project_dir, str(project))
         self.assertEqual(meta.turns, 1)
 
         reloaded = adapter.load_session(sid)
         self.assertEqual(len(reloaded.turns), 2)
-        self.assertIn("[tool] edit_file · ok · src/auth.py", reloaded.turns[1].text)
-        cmd = adapter.resume_command(sid, "/tmp/中文项目")
+        self.assertIn("[tool] edit_file · ok", reloaded.turns[1].text)
+        cmd = adapter.resume_command(sid, str(project))
         self.assertIn(f"dsh --profile tui --resume {sid}", cmd)
 
         # directory encoding is correct (each CJK char -> ~XXXX)
-        written = Path(os.environ["CAF_DSH_SESSIONS"])
-        self.assertTrue(
-            list(written.glob("--tmp-~4E2D~6587~9879~76EE--/session-*"))
-            or list(written.glob("--tmp-*/session-*"))
-        )
+        written = Path(os.environ["CAF_DSH_SESSIONS"]) / _project_key(str(project))
+        self.assertTrue(list(written.glob("session-*/session.jsonl.zstd")))
+
+    def test_write_rejects_unknown_cwd(self):
+        with self.assertRaises(CafError):
+            DshAdapter().write(SessionIR(SessionMeta("cc", "src"), []))
 
     def test_write_one_frame_per_line(self):
         """DSH stores one zstd frame per JSON line; a single-frame log is rejected."""

@@ -8,7 +8,7 @@ from pathlib import Path
 from caf.core import (
     CafError,
     SessionMeta,
-    ToolSummary,
+    ToolEvidence,
     Turn,
     atomic_write,
     parse_session_ref,
@@ -60,8 +60,12 @@ class CoreTest(unittest.TestCase):
         self.assertTrue(ctx.exception.hint)
 
     def test_pick_recent(self):
-        old = SessionMeta("cc", "a", turns=1, last_active_at=100)
-        new = SessionMeta("codex", "b", turns=1, last_active_at=200)
+        old = SessionMeta(
+            "cc", "a", turns=1, project_dir=os.getcwd(), last_active_at=100
+        )
+        new = SessionMeta(
+            "codex", "b", turns=1, project_dir=os.getcwd(), last_active_at=200
+        )
         picked = pick_recent_session([FakeAdapter([old]), FakeAdapter([new])])
         self.assertEqual(picked.session_id, "b")
 
@@ -83,6 +87,10 @@ class CoreTest(unittest.TestCase):
         picked = pick_recent_session([FakeAdapter([unknown])], project_dir=os.getcwd())
         self.assertIsNone(picked)
 
+    def test_pick_recent_never_returns_unknown_cwd(self):
+        unknown = SessionMeta("cc", "a", turns=1, project_dir=None, last_active_at=999)
+        self.assertIsNone(pick_recent_session([FakeAdapter([unknown])]))
+
     def test_parse_ref_bare_id_ambiguous_across_agents(self):
         """A bare id matching sessions in several adapters must error, not pick the first."""
         adapters = [
@@ -94,12 +102,18 @@ class CoreTest(unittest.TestCase):
 
     def test_with_tool_lines_canonical(self):
         """Envelope text uses canonical English tokens."""
-        text = with_tool_lines("", [ToolSummary("edit_file", "ok", "src/auth.py")])
-        self.assertEqual(text, "[tool] edit_file · ok · src/auth.py")
+        text = with_tool_lines(
+            "", [ToolEvidence("edit_file", status="ok", result="done")]
+        )
+        self.assertEqual(text, "[tool] edit_file · ok\n[tool-result] done")
 
     def test_pick_recent_skips_empty(self):
-        empty = SessionMeta("cc", "a", turns=0, last_active_at=999)
-        real = SessionMeta("cc", "b", turns=5, last_active_at=100)
+        empty = SessionMeta(
+            "cc", "a", turns=0, project_dir=os.getcwd(), last_active_at=999
+        )
+        real = SessionMeta(
+            "cc", "b", turns=5, project_dir=os.getcwd(), last_active_at=100
+        )
         picked = pick_recent_session([FakeAdapter([empty, real])])
         self.assertEqual(picked.session_id, "b")
 
@@ -119,10 +133,17 @@ class CoreTest(unittest.TestCase):
         self.assertIsNone(warning)
 
     def test_slice_incomplete_turn(self):
-        turns = self._turns(3) + [Turn("user", "u4-未完成")]
-        sliced, warning = slice_turns(turns, 4)
-        self.assertEqual(len(sliced), 6)
-        self.assertIn("unfinished", warning)
+        """An unfinished turn must fail loudly, never silently move the fork point."""
+        turns = self._turns(3) + [Turn("user", "u4-unfinished")]
+        with self.assertRaises(CafError) as ctx:
+            slice_turns(turns, 4)
+        self.assertIn("unfinished", str(ctx.exception))
+        self.assertIn("--at 3", ctx.exception.hint)
+
+    def test_slice_first_unfinished_turn_has_safe_hint(self):
+        with self.assertRaises(CafError) as ctx:
+            slice_turns([Turn("user", "u1")], 1)
+        self.assertNotIn("--at 0", ctx.exception.hint)
 
     def test_slice_includes_all_assistant_segments(self):
         """Turn N = user N plus everything up to the next user (tool loops produce several assistants)."""
@@ -139,11 +160,11 @@ class CoreTest(unittest.TestCase):
         sliced2, _ = slice_turns(turns, 2)
         self.assertEqual([t.text for t in sliced2], ["u1", "a1", "a2", "u2", "a3"])
 
-    def test_slice_consecutive_users_keeps_only_user_n(self):
-        """Multi-part input (user N directly followed by user N+1): turn N is just user N."""
+    def test_slice_consecutive_users_rejects_unfinished_turn(self):
+        """A user message without an assistant reply is not a valid --at boundary."""
         turns = [Turn("user", "u1"), Turn("user", "u2"), Turn("assistant", "a2")]
-        sliced, _ = slice_turns(turns, 1)
-        self.assertEqual([t.text for t in sliced], ["u1"])
+        with self.assertRaises(CafError):
+            slice_turns(turns, 1)
 
     def test_slice_out_of_range(self):
         turns = self._turns(2)

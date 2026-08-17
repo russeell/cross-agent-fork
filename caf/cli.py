@@ -135,7 +135,11 @@ def _render_table(
         sid = _pad(f"{m.provider_id}:{m.session_id[:12]}", 18)
         marker = (
             "  <- current project"
-            if (show_marker and m.project_dir == current_cwd)
+            if (
+                show_marker
+                and m.project_dir
+                and os.path.realpath(m.project_dir) == os.path.realpath(current_cwd)
+            )
             else ""
         )
         prefix = f"  {i:>2}. " if numbered else "  "
@@ -161,7 +165,9 @@ def _usable_sessions(adapters: list[Adapter]) -> list[SessionMeta]:
     for meta in _all_sessions(adapters):
         if meta.turns == 0:
             continue
-        if meta.project_dir and not os.path.isdir(meta.project_dir):
+        if not meta.project_dir:
+            continue  # unknown cwd would be invented state — never fork it
+        if not os.path.isdir(meta.project_dir):
             continue
         out.append(meta)
     return out
@@ -281,8 +287,9 @@ def _fork_interactive(adapters: list[Adapter]):
     usable = sorted(
         _usable_sessions(readable), key=lambda m: m.last_active_at, reverse=True
     )
-    here = [m for m in usable if m.project_dir == cwd]
-    others = [m for m in usable if m.project_dir != cwd]
+    real_cwd = os.path.realpath(cwd)
+    here = [m for m in usable if os.path.realpath(m.project_dir) == real_cwd]
+    others = [m for m in usable if os.path.realpath(m.project_dir) != real_cwd]
     ordered = here + others
     if not ordered:
         raise CafError(
@@ -354,7 +361,12 @@ def cmd_fork(args) -> int:
             raise CafError("Nothing to fork")
         fork_note = f" @{args.at}"
 
-    if source_meta.project_dir and not os.path.isdir(source_meta.project_dir):
+    if not source_meta.project_dir:
+        raise CafError(
+            "Source session working directory is unknown; it cannot be forked safely.",
+            hint="Pick a session with a known cwd from caf list --all",
+        )
+    if not os.path.isdir(source_meta.project_dir):
         raise CafError(
             f"Source session working directory does not exist: {source_meta.project_dir}",
             hint="Pick another session with caf list --all",
@@ -374,7 +386,8 @@ def cmd_fork(args) -> int:
                     "source": f"{source_meta.provider_id}:{source_meta.session_id}",
                     "target": target_name,
                     "session_id": new_id,
-                    "turns": len(ir.turns),
+                    "user_turns": user_turns,
+                    "messages": total_items,
                     "resume_command": resume_cmd,
                 },
                 ensure_ascii=False,
@@ -382,14 +395,12 @@ def cmd_fork(args) -> int:
         )
         return 0
 
-    write_desc = "official import" if target_name == "codex" else "file-level envelope"
     print(
-        f"Forked: {source_meta.provider_id}:{source_meta.session_id[:8]}{fork_note} -> {target_name} "
-        f"({_turns_label(user_turns)} / {total_items} messages, original untouched)"
+        f"✓ {source_meta.provider_id}:{source_meta.session_id[:8]}{fork_note} "
+        f"→ {target_name}:{new_id[:12]}"
     )
-    print(f"Written: {target_name} {new_id[:8]}... ({write_desc})")
-    print()
-    print("-> resume: " + resume_cmd)
+    print(f"  source unchanged ({_turns_label(user_turns)} / {total_items} messages)")
+    print(f"→ {resume_cmd}")
     return 0
 
 
@@ -474,8 +485,8 @@ def cmd_doctor(args) -> int:
         rows.append(
             {
                 "agent": adapter.display_name or adapter.agent_id,
-                "read": read,
-                "write": write,
+                "from": read,
+                "to": write,
                 "version": adapter.store_version(),
                 "store": adapter.store_path(),
                 "install_hint": adapter.install_hint,
@@ -488,12 +499,12 @@ def cmd_doctor(args) -> int:
 
     print(_discovery_line([a for a in discovered if a.read_ready()]))
     for r in rows:
-        mark = "✓" if r["write"] == "ok" else ("[!]" if r["read"] == "ok" else "[X]")
+        mark = "✓" if r["to"] == "ok" else ("[!]" if r["from"] == "ok" else "[X]")
         print(
-            f"  {mark} {r['agent']:8s} read {r['read']:5s} write {r['write']:5s} "
+            f"  {mark} {r['agent']:8s} from {r['from']:5s} to {r['to']:5s} "
             f"v{r['version'] or '?'}  {r['store']}"
         )
-        if (r["write"] == "off" or r["read"] == "off") and r["install_hint"]:
+        if (r["to"] == "off" or r["from"] == "off") and r["install_hint"]:
             print(f"      install: {r['install_hint']}")
     return 0
 
@@ -551,7 +562,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_fork.add_argument(
         "--at",
         type=int,
-        help="Fork through user turn N (default = last completed turn)",
+        help="Fork through user turn N (default: the whole current session snapshot)",
     )
     p_fork.add_argument(
         "--into", help="Target agent (default = another installed agent)"

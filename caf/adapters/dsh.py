@@ -24,7 +24,7 @@ from caf.core import (
     CafError,
     SessionIR,
     SessionMeta,
-    ToolSummary,
+    ToolEvidence,
     Turn,
     with_tool_lines,
 )
@@ -97,19 +97,14 @@ def _text_from_content(content) -> str:
     return "\n".join(parts)
 
 
-def _file_from_args(arguments) -> str | None:
-    """Extract a file name from tool/call arguments (accepts a JSON string or a parsed dict)."""
-    if isinstance(arguments, str):
-        try:
-            arguments = json.loads(arguments)
-        except Exception:
-            return None
-    if isinstance(arguments, dict):
-        for key in ("file_path", "path", "file", "file_name"):
-            val = arguments.get(key)
-            if isinstance(val, str):
-                return val
-    return None
+def _argument_text(value) -> str:
+    """Keep tool arguments readable whether DSH stores raw JSON or a parsed object."""
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return str(value)
 
 
 class DshAdapter(Adapter):
@@ -224,20 +219,29 @@ class DshAdapter(Adapter):
                     turns.append(Turn("assistant", text))
             elif t == "tool/call" and turns and turns[-1].role == "assistant":
                 turns[-1].tools.append(
-                    ToolSummary(
-                        str(data.get("name", "tool")),
-                        "ok",
-                        _file_from_args(data.get("arguments")),
+                    ToolEvidence(
+                        name=str(data.get("name", "tool")),
+                        call_id=str(data.get("callId", "")),
+                        arguments=_argument_text(data.get("arguments", "")),
                     )
                 )
-            elif (
-                t == "tool/result"
-                and turns
-                and turns[-1].role == "assistant"
-                and data.get("error")
-            ):
-                if turns[-1].tools:
-                    turns[-1].tools[-1].status = "error"
+            elif t == "tool/result" and turns and turns[-1].role == "assistant":
+                msg = data.get("message") or {}
+                result_text = ""
+                for block in msg.get("content") or []:
+                    if (
+                        not isinstance(block, dict)
+                        or block.get("type") != "tool-result"
+                    ):
+                        continue
+                    result_text = _text_from_content(block.get("content"))
+                    break
+                call_id = (msg.get("source") or {}).get("callId", "")
+                for tool in reversed(turns[-1].tools):
+                    if tool.call_id == call_id:
+                        tool.result = result_text
+                        tool.status = "error" if data.get("error") else "ok"
+                        break
         return SessionIR(meta, turns)
 
     def resume_command(self, sid: str, project_dir: str | None) -> str:
@@ -251,7 +255,11 @@ class DshAdapter(Adapter):
 
     def write(self, ir: SessionIR) -> str:
         """Write a native DSH session: header + event sequence, zstd-compressed, atomic write."""
-        cwd = ir.session.project_dir or os.getcwd()
+        cwd = ir.session.project_dir
+        if not cwd or not os.path.isdir(cwd):
+            raise CafError(
+                "Cannot fork: source working directory is unknown or does not exist."
+            )
         sid = f"session-{uuid4()}"
         now_ms = int(time.time() * 1000)
         events: list[dict] = []

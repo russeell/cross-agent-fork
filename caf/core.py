@@ -20,17 +20,19 @@ class CafError(Exception):
 
 
 @dataclass
-class ToolSummary:
+class ToolEvidence:
     name: str
-    status: str = "ok"
-    file: str | None = None
+    status: str = "unknown"  # "unknown" | "ok" | "error" — never guessed, only observed
+    call_id: str = ""
+    arguments: str = ""  # raw arguments (JSON string or text), truncated on render
+    result: str = ""  # tool output text, truncated on render
 
 
 @dataclass
 class Turn:
     role: str  # "user" | "assistant"
     text: str
-    tools: list[ToolSummary] = field(default_factory=list)
+    tools: list[ToolEvidence] = field(default_factory=list)
 
 
 @dataclass
@@ -46,7 +48,7 @@ class SessionMeta:
 
 @dataclass
 class SessionIR:
-    """Canonical IR (v0.1 minimal): whole-session text turns + tool summaries."""
+    """Minimal portable fork snapshot, not a universal session schema."""
 
     session: SessionMeta
     turns: list[Turn]
@@ -101,16 +103,17 @@ def parse_session_ref(ref: str, adapters) -> tuple[str, str]:
 
 
 def pick_recent_session(adapters, project_dir: str | None = None) -> SessionMeta | None:
-    """Pick the most recent non-empty session; prefer project_dir when given (empty-session noise filter)."""
+    """Pick the most recent forkable session; prefer project_dir when given."""
     best: SessionMeta | None = None
     for adapter in adapters:
         for meta in adapter.scan_cached():
             if meta.turns == 0:
                 continue
-            if meta.project_dir and not os.path.isdir(meta.project_dir):
-                continue  # sessions whose working directory is gone cannot be forked
-                # (the official importer requires cwd)
-            if project_dir is not None and meta.project_dir != project_dir:
+            if not meta.project_dir or not os.path.isdir(meta.project_dir):
+                continue  # a fork must carry a real cwd; never invent one
+            if project_dir is not None and os.path.realpath(
+                meta.project_dir
+            ) != os.path.realpath(project_dir):
                 continue
             if best is None or meta.last_active_at > best.last_active_at:
                 best = meta
@@ -119,7 +122,7 @@ def pick_recent_session(adapters, project_dir: str | None = None) -> SessionMeta
 
 def slice_turns(turns: list[Turn], at: int) -> tuple[list[Turn], str | None]:
     """Slice IR turns by user-message sequence: include user N and everything up to the next user.
-    An unfinished final turn is cut to the last complete turn with a warning."""
+    A requested turn without an assistant reply fails instead of moving the boundary."""
     if at < 1:
         raise CafError(f"Invalid fork point: --at {at}", hint="--at must be >= 1")
 
@@ -137,29 +140,32 @@ def slice_turns(turns: list[Turn], at: int) -> tuple[list[Turn], str | None]:
             hint="Check turns with caf list",
         )
 
-    warning: str | None = None
     end = idx_user
     while end + 1 < len(turns) and turns[end + 1].role != "user":
         end += 1  # everything after user N up to the next user belongs to turn N
-    if end == idx_user and idx_user == len(turns) - 1:
-        # unfinished turn at the end of the session (DSH rule: only fork completed turns)
-        end = idx_user - 1
-        while end >= 0 and turns[end].role != "assistant":
-            end -= 1
-        if end < 0:
-            raise CafError(
-                f"No completed turns before turn {at}",
-                hint="Pick an earlier --at",
-            )
-        warning = f"Turn {at} is unfinished; truncated to turn {at - 1}"
-    return turns[: end + 1], warning
+    segment = turns[idx_user : end + 1]
+    if not any(turn.role == "assistant" for turn in segment):
+        # never silently move the fork point: an unfinished turn must be explicit
+        hint = (
+            f"Use --at {at - 1}, or fork the whole current session (no --at)."
+            if at > 1
+            else "Fork the whole current session (no --at), or choose a completed turn."
+        )
+        raise CafError(
+            f"Turn {at} is unfinished (the session ends there without a reply).",
+            hint=hint,
+        )
+    return turns[: end + 1], None
 
 
-def with_tool_lines(text: str, tools: list[ToolSummary]) -> str:
-    """Append tool summaries to a turn's text as one line per tool."""
+def with_tool_lines(text: str, tools: list[ToolEvidence]) -> str:
+    """Render tool evidence into a turn's text: one summary line per tool, plus the
+    arguments and result the next agent needs to understand what happened."""
     for tool in tools:
         line = f"[tool] {tool.name} · {tool.status}"
-        if tool.file:
-            line += f" · {tool.file}"
         text = f"{text}\n{line}" if text else line
+        if tool.arguments:
+            text += f"\n  args: {tool.arguments[:500]}"
+        if tool.result:
+            text += f"\n[tool-result] {tool.result[:2000]}"
     return text

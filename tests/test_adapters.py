@@ -22,6 +22,7 @@ FIXTURES = Path(__file__).parent / "fixtures"
 class ClaudeAdapterTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
+        Path("/tmp/fixture-proj").mkdir(parents=True, exist_ok=True)
         projects = Path(self.tmp) / "projects"
         d = projects / "-tmp-fixture-proj"
         d.mkdir(parents=True)
@@ -62,7 +63,9 @@ class ClaudeAdapterTest(unittest.TestCase):
         self.assertEqual(ir.turns[0].role, "user")
         self.assertIn("PKCE", ir.turns[0].text)
         self.assertEqual(ir.turns[1].tools[0].name, "Read")
-        self.assertEqual(ir.turns[1].tools[0].file, "src/auth.py")
+        self.assertIn("src/auth.py", ir.turns[1].tools[0].arguments)
+        self.assertEqual(ir.turns[1].tools[0].result, "def login(): ...")
+        self.assertEqual(ir.turns[1].tools[0].status, "ok")
 
     def test_write_roundtrip(self):
         adapter = ClaudeAdapter()
@@ -73,22 +76,40 @@ class ClaudeAdapterTest(unittest.TestCase):
             new_id
         )  # fresh instance: no stale scan cache
         self.assertEqual(len(reloaded.turns), 4)
-        self.assertIn("[tool] Read · ok · src/auth.py", reloaded.turns[1].text)
+        self.assertIn("[tool] Read · ok", reloaded.turns[1].text)
+        self.assertIn("src/auth.py", reloaded.turns[1].text)  # tool arguments preserved
+        self.assertIn(
+            "def login(): ...", reloaded.turns[1].text
+        )  # tool result preserved
         cmd = adapter.resume_command(new_id, "/tmp/fixture-proj")
         self.assertIn("cd /tmp/fixture-proj && claude --resume", cmd)
         self.assertTrue(
-            (Path(os.environ["CAF_CC_PROJECTS"]) / "-tmp-fixture-proj" / f"{new_id}.jsonl").is_file()
+            (
+                Path(os.environ["CAF_CC_PROJECTS"])
+                / "-tmp-fixture-proj"
+                / f"{new_id}.jsonl"
+            ).is_file()
         )
 
     def test_write_creates_own_dir(self):
         adapter = ClaudeAdapter()
+        other = Path(self.tmp) / "other-project"
+        other.mkdir(parents=True, exist_ok=True)
         ir = SessionIR(
-            SessionMeta("codex", "src", project_dir="/other/project"),
+            SessionMeta("codex", "src", project_dir=str(other)),
             [],
         )
         new_id = adapter.write(ir)
-        p = Path(os.environ["CAF_CC_PROJECTS"]) / "-other-project" / f"{new_id}.jsonl"
+        p = (
+            Path(os.environ["CAF_CC_PROJECTS"])
+            / encode_cwd(str(other))
+            / f"{new_id}.jsonl"
+        )
         self.assertTrue(p.is_file())
+
+    def test_write_rejects_unknown_cwd(self):
+        with self.assertRaises(CafError):
+            ClaudeAdapter().write(SessionIR(SessionMeta("codex", "src"), []))
 
     def test_ai_title_priority(self):
         adapter = ClaudeAdapter()
@@ -127,6 +148,7 @@ class ClaudeAdapterTest(unittest.TestCase):
 class CodexAdapterTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
+        Path("/tmp/fixture-proj").mkdir(parents=True, exist_ok=True)
         os.environ["CAF_CC_PROJECTS"] = str(Path(self.tmp) / "cc-projects")
         home = Path(self.tmp) / "codex"
         d = home / "sessions" / "2026" / "08" / "01"
@@ -211,6 +233,67 @@ class CodexAdapterTest(unittest.TestCase):
         self.assertEqual(ir.turns[0].role, "user")
         self.assertIn("PKCE", ir.turns[0].text)
 
+    def test_load_tool_evidence(self):
+        """function_call / function_call_output events attach arguments and results to tools."""
+        import json as _json
+
+        home = Path(os.environ["CAF_CODEX_HOME"])
+        adapter = CodexAdapter()
+        d = home / "sessions" / "2026" / "08" / "01"
+        evs = [
+            {
+                "type": "session_meta",
+                "payload": {
+                    "id": "019f9999-0000-0000-0000-000000000099",
+                    "cwd": "/tmp/p",
+                },
+            },
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "text", "text": "read the file"}],
+                },
+            },
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call",
+                    "name": "Read",
+                    "call_id": "call_1",
+                    "arguments": '{"file_path":"src/auth.py"}',
+                },
+            },
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call_output",
+                    "call_id": "call_1",
+                    "output": "TOOL-MARKER-7\n",
+                    "is_error": False,
+                },
+            },
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "done"}],
+                },
+            },
+        ]
+        (
+            d / "rollout-2026-08-01T10-00-00-019f9999-0000-0000-0000-000000000099.jsonl"
+        ).write_text("\n".join(_json.dumps(e) for e in evs) + "\n", encoding="utf-8")
+        meta = adapter.find_session("019f9999")
+        ir = adapter.load_session(meta.session_id)
+        tool = ir.turns[1].tools[0]
+        self.assertEqual(tool.name, "Read")
+        self.assertIn("src/auth.py", tool.arguments)
+        self.assertIn("TOOL-MARKER-7", tool.result)
+        self.assertEqual(tool.status, "ok")
+
     @mock.patch(
         "caf.adapters.codex.import_external_session", return_value="019e-fake-thread"
     )
@@ -227,6 +310,12 @@ class CodexAdapterTest(unittest.TestCase):
         new_id = adapter.write(ir)
         imp.assert_called_once()
         self.assertEqual(new_id, "019e-fake-thread")
+
+    @mock.patch("caf.adapters.codex.import_external_session")
+    def test_write_rejects_unknown_cwd(self, imp):
+        with self.assertRaises(CafError):
+            CodexAdapter().write(SessionIR(SessionMeta("cc", "src"), []))
+        imp.assert_not_called()
 
     def test_write_bridges_non_cc_source(self):
         """Non-CC source (e.g. DSH) -> render CC mirror -> official import -> mirror cleanup."""

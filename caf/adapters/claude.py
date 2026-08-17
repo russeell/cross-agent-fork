@@ -15,7 +15,7 @@ from caf.core import (
     CafError,
     SessionIR,
     SessionMeta,
-    ToolSummary,
+    ToolEvidence,
     Turn,
     atomic_write,
     read_jsonl,
@@ -56,7 +56,8 @@ def _text_blocks(message) -> str | None:
     return "\n".join(parts) if parts else None
 
 
-def _tool_blocks(message) -> list[ToolSummary]:
+def _tool_blocks(message) -> list[ToolEvidence]:
+    """tool_use blocks -> evidence (status stays unknown until the matching result arrives)."""
     content = message.get("content") if isinstance(message, dict) else None
     out = []
     if not isinstance(content, list):
@@ -65,14 +66,38 @@ def _tool_blocks(message) -> list[ToolSummary]:
         if not isinstance(block, dict) or block.get("type") != "tool_use":
             continue
         inp = block.get("input") or {}
-        file = None
-        if isinstance(inp, dict):
-            for key in ("file_path", "path", "file", "file_name"):
-                val = inp.get(key)
-                if isinstance(val, str):
-                    file = val
-                    break
-        out.append(ToolSummary(str(block.get("name", "tool")), "ok", file))
+        out.append(
+            ToolEvidence(
+                name=str(block.get("name", "tool")),
+                call_id=str(block.get("id", "")),
+                arguments=json.dumps(inp, ensure_ascii=False)
+                if isinstance(inp, dict)
+                else str(inp),
+            )
+        )
+    return out
+
+
+def _tool_results(message) -> dict[str, tuple[str, str]]:
+    """tool_result blocks -> {tool_use_id: (result_text, status)}."""
+    content = message.get("content") if isinstance(message, dict) else None
+    out: dict[str, tuple[str, str]] = {}
+    if not isinstance(content, list):
+        return out
+    for block in content:
+        if not isinstance(block, dict) or block.get("type") != "tool_result":
+            continue
+        tid = str(block.get("tool_use_id", ""))
+        if not tid:
+            continue
+        raw = block.get("content")
+        text = (
+            _text_blocks({"content": raw})
+            if isinstance(raw, list)
+            else (raw if isinstance(raw, str) else "")
+        )
+        status = "error" if block.get("is_error") else "ok"
+        out[tid] = (text or "", status)
     return out
 
 
@@ -81,9 +106,21 @@ def _ts() -> str:
 
 
 def render_cc_lines(ir: SessionIR, sid: str) -> list[str]:
-    """Build CC envelope JSONL lines (queue-operation + summary + parentUuid chain + tool summaries)."""
-    cwd = ir.session.project_dir or os.getcwd()
+    """Build CC envelope JSONL lines with text and portable tool evidence."""
+    cwd = ir.session.project_dir
+    if not cwd:
+        raise CafError("Cannot fork: source working directory is unknown.")
     now = _ts()
+    summary = {
+        "type": "summary",
+        "summary": ir.session.title or "caf fork",
+        "leafUuid": None,
+        "cwd": cwd,
+        "sessionId": sid,
+    }
+    version = _cc_version()
+    if version:
+        summary["version"] = version
     lines: list[dict] = [
         {
             "type": "queue-operation",
@@ -99,14 +136,7 @@ def render_cc_lines(ir: SessionIR, sid: str) -> list[str]:
             "sessionId": sid,
             "content": [],
         },
-        {
-            "type": "summary",
-            "summary": ir.session.title or "caf fork",
-            "leafUuid": None,
-            "cwd": cwd,
-            "sessionId": sid,
-            "version": _cc_version(),
-        },
+        summary,
     ]
     parent: str | None = None
     for turn in ir.turns:
@@ -218,12 +248,23 @@ class ClaudeAdapter(Adapter):
             t = ev.get("type")
             if t == "user":
                 msg = ev.get("message") or {}
-                if ev.get("isMeta") or msg.get("role") != "user":
+                if not ev.get("isMeta"):
+                    if msg.get("role") != "user":
+                        continue
+                    text = _text_blocks(msg)
+                    if text is None:
+                        continue
+                    turns.append(Turn("user", text))
                     continue
-                text = _text_blocks(msg)
-                if text is None:
+                # isMeta user message: tool_result blocks complete the previous assistant's tools
+                if not turns or turns[-1].role != "assistant":
                     continue
-                turns.append(Turn("user", text))
+                for tid, (result, status) in _tool_results(msg).items():
+                    for tool in reversed(turns[-1].tools):
+                        if tool.call_id == tid:
+                            tool.result = result
+                            tool.status = status
+                            break
             elif t == "assistant":
                 msg = ev.get("message") or {}
                 text = _text_blocks(msg) or ""
@@ -238,7 +279,11 @@ class ClaudeAdapter(Adapter):
 
     def write(self, ir: SessionIR) -> str:
         """Write a native CC JSONL envelope: queue-operation prefix + parentUuid chain."""
-        cwd = ir.session.project_dir or os.getcwd()
+        cwd = ir.session.project_dir
+        if not cwd or not os.path.isdir(cwd):
+            raise CafError(
+                "Cannot fork: source working directory is unknown or does not exist."
+            )
         target_dir = _projects_dir() / encode_cwd(cwd)
         target_dir.mkdir(parents=True, exist_ok=True)
         sid = str(uuid4())
@@ -251,14 +296,15 @@ class ClaudeAdapter(Adapter):
             raise CafError("Write verification failed; rolled back")
         return sid
 
+
 _CACHED_CC_VERSION: str | None = None
 
 
 def _cc_version() -> str:
-    """CC summary version field: probe once, fall back to a known-good constant."""
+    """Return the installed CC version when known; never fabricate a version."""
     global _CACHED_CC_VERSION
     if _CACHED_CC_VERSION is None:
-        _CACHED_CC_VERSION = _cc_version_probe() or "2.1.187"
+        _CACHED_CC_VERSION = _cc_version_probe()
     return _CACHED_CC_VERSION
 
 
