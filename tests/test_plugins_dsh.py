@@ -154,8 +154,10 @@ class DshPluginTest(unittest.TestCase):
         self.assertEqual([e["seq"] for e in events], list(range(len(events))))  # dsh: events[i].seq === i
         user = next(e for e in events if e["type"] == "user/message")
         self.assertNotEqual(user["data"]["id"], "")  # dsh: message events require an id
+        self.assertEqual(user.get("surfaceOp"), "append")  # dsh: surface events require the marker
         assistant = next(e for e in events if e["type"] == "assistant/message")
         self.assertNotEqual(assistant["data"]["message"]["id"], "")
+        self.assertEqual(assistant.get("surfaceOp"), "append")
 
     def test_read_single_frame_still_compatible(self):
         """Old single-frame logs (pre-frame-per-line dsh) must still decompress."""

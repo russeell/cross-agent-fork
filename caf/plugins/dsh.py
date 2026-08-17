@@ -302,6 +302,7 @@ class DshAdapter(Adapter):
                 if first_user_seq is None:
                     first_user_seq = seq
                 events.append({"type": "user/message", "seq": seq, "time": now_ms,
+                               "surfaceOp": "append",
                                "data": {"id": str(uuid4()), "role": "user",
                                         "content": [{"type": "text", "text": t.text}],
                                         "source": {"kind": "user"}}})
@@ -309,6 +310,7 @@ class DshAdapter(Adapter):
             elif t.role == "assistant":
                 text = with_tool_lines(t.text, t.tools)
                 events.append({"type": "assistant/message", "seq": seq, "time": now_ms,
+                               "surfaceOp": "append",
                                "data": {"turn": turn, "step": 1,
                                         "message": {
                                             "id": str(uuid4()),
