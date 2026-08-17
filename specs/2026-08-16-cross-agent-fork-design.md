@@ -158,7 +158,7 @@ caf list [--agent <agent>] [--all] [--json]
 | **T2 扩展**（写侧计划） | opencode、Gemini CLI、Cursor | v0.2+ | v0.3+ |
 | **T3 社区驱动** | Grok、Cline、Aider、Kimi、Copilot、Devin… | 按需 | 按需 |
 
-插件机制：`caf/plugins/` 目录，每模块导出一个 Adapter 子类即被自动发现（零注册代码，插件失败不影响核心）。DSH 为第一个社区插件——格式是 zstd 压缩 JSONL（`~/.dsh/sessions/<projectKey(cwd)>/session-<uuid>/session.jsonl.zstd`），依赖可选（zstandard / zstd CLI）。
+插件机制：`caf/plugins/` 目录，每模块导出一个 Adapter 子类即被自动发现（零注册代码，插件失败不影响核心）。DSH 为第一个社区插件——格式是 zstd 压缩 JSONL（`~/.dsh/sessions/<projectKey(cwd)>/session-<uuid>/session.jsonl.zstd`）。zstandard 自 v0.2 起为**正式依赖**（安装一行完成，不再需要 extras 或 zstd CLI）。
 
 借鉴：superpowers 支持列表广（14 harness，每 harness 一个插件清单）；agent-reach 用 doctor 三档状态管理能力边界（ok/warn/off）——**我们的 doctor 显示每个 agent 的 read/write 状态（ok / planned / off）**，支持列表可以广，写侧承诺分级。
 
@@ -235,7 +235,7 @@ class Adapter:
 - ~~命令级扫描缓存~~ —— 已实现（v0.2）：`scan_cached`，每命令每 adapter 只扫一次
 - skills 插件打包（marketplace 分发）
 - 写侧扩展：opencode / gemini（需实机验证；opencode 存储为版本化 sqlite，写侧走官方 API）
-- `--worktree`；`curl | bash` 安装器
+- `--worktree`
 
 ## 10.1 v0.3 候选
 

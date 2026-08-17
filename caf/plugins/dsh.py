@@ -4,7 +4,7 @@ Format (verified against @deepseek-ai/dsh-session-persistence-jsonl):
   ~/.dsh/sessions/<projectKey(cwd)>/session-<uuid>/session.jsonl.zstd
   line 1 header: {"type":"session","version":0,"id":"session-...","createdAt":ms,"cwd":...}
   following events: turn/start | user/message | assistant/message | tool/call | tool/result | turn/end ...
-Dependencies (optional): zstandard or the system zstd CLI; detect() returns False without either.
+Dependency: zstandard (a required dependency since v0.2; the system zstd CLI remains a fallback).
 """
 
 from __future__ import annotations

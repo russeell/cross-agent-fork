@@ -10,9 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "cross-agent-fork contributors" }]
-
-[project.optional-dependencies]
-dsh = ["zstandard"]
+dependencies = ["zstandard"]
 
 [project.scripts]
 caf = "caf.cli:main"

@@ -1,122 +1,95 @@
 **English** | [简体中文](README.zh-CN.md)
 
-# cross-agent-fork (caf)
+# cross-agent-fork
 
-> The cross-agent version of your agent's built-in fork: take a whole session from one agent, continue it in another — original untouched.
+> Mid-task in one coding agent, continue in another.
 
-`caf` carries session A's **conversation history, working directory, and essential tool summaries** into a native, resumable session inside agent B. Switch between Claude Code, Codex, and DeepSeek Harness without re-explaining anything.
-
-## Supported agents
-
-Three-tier commitment (inspired by superpowers / agent-reach):
-
-| Tier | Agent | Read | Write |
-|---|---|---|---|
-| **T1 core** | Claude Code, Codex CLI, **DeepSeek Harness (plugin)** | ✅ | ✅ |
-| **T2 planned** | opencode, Gemini CLI, Cursor | v0.2+ | v0.3+ |
-| **T3 community** | Grok, Cline, Aider, Kimi, Copilot… | on demand | on demand |
-
-`caf doctor` shows each agent's read/write status (ok / planned / off), so capability boundaries are always visible.
-
-### DeepSeek Harness plugin
-
-DSH sessions are zstd-compressed JSONL, supported via the first bundled community plugin (`caf/plugins/dsh.py`):
+`caf` forks a session from Claude Code, Codex, or DeepSeek Harness into another agent —
+the conversation context and working directory come along, and the source session is
+never modified.
 
 ```bash
-pipx install "cross-agent-fork[dsh]"   # or: pip install zstandard / brew install zstd
-caf fork cc:last --into dsh    # Claude Code → DSH
-caf fork dsh:last --into claude  # DSH → Claude Code
-caf fork dsh:last --into codex # DSH → Codex (any source → CC mirror → official import)
+caf fork cc:last --into codex
 ```
 
-Your agent's built-in fork starts a new line *in the same agent*. `caf` starts that line **in another agent** — the original session never moves.
+```text
+✓ cc:9f3a → codex
+→ codex resume 019...
+```
+
+## Install
+
+```bash
+uv tool install cross-agent-fork
+```
+
+Or with pipx:
+
+```bash
+pipx install cross-agent-fork
+```
 
 ## Quick start
 
 ```bash
-pipx install cross-agent-fork        # zero dependencies
-caf fork cc:last --into codex        # fork the most recent Claude Code session into Codex
-caf fork cc:9f3a --at 12 --into codex  # fork from turn 12 (any boundary)
-caf list                             # browse sessions across all agents
-caf doctor                           # health check + fix hints
+caf fork                      # interactive picker
+caf fork --into codex         # in a project: fork the most recent session here into Codex
+caf fork cc:last --into codex # most recent Claude Code session → Codex
+caf fork cc:last --at 12 --into codex  # new line from turn 12
 ```
 
-Every fork ends with a **paste-ready resume command**:
+The source session is never modified. Every fork ends with a paste-ready resume command
+for the target agent.
 
-```text
-✓ Forked: cc:9f3a → codex (whole session, original untouched)
-✓ Written: codex thread 01J7... (official import)
-→ resume: codex resume 01J7...     [-c copy]
+## Supported agents
+
+| Agent | Fork from | Fork to |
+|---|---|---|
+| Claude Code | ✓ | ✓ |
+| Codex | ✓ | ✓ |
+| DeepSeek Harness | ✓ | ✓ |
+
+## Other commands
+
+```bash
+caf list    # browse sessions across agents (-s <keyword> search, --all, --limit N)
+caf doctor  # health check: read/write status per agent
 ```
 
-## What it solves
+## Partial fork
 
-- Stuck mid-task in Claude Code and want to switch to Codex? **The conversation context comes with you.**
-- Working in a desktop client (Codex Desktop, Claude Code, …)? Since v0.2 `caf mcp` gives any MCP client a conversation-level entry point.
-- Sessions scattered across `~/.claude/projects/`, `~/.codex/sessions/`, `~/.dsh/sessions/`, impossible to find or resume? `caf list` unifies them.
+`--at N` starts the new line at turn N (everything up to the next user message) —
+handy when you want to branch off before things went wrong:
 
-## Usage paths
-
-| Situation | Command |
-|---|---|
-| New / unsure | `caf fork` — interactive picker, Enter accepts |
-| Experienced / in a hurry | `caf fork cc:last --into codex` — one line |
-| In the middle of agent A | `caf fork --into codex` — auto-picks the most recent session in this directory, zero args |
-| Inside an agent (with the skill installed) | "fork the current session into Codex" — conversation is the entry point |
-
-## Use it inside your agent (skills)
-
-From a repository checkout, copy `skills/caf/` into your agent (Codex: `cp -r skills/caf ~/.agents/skills/`), then just say:
-
-> Fork the current session into Codex.
-
-The agent calls `caf` for you — no session ids to remember. The skill is English-only and passes your input language to `caf --lang` automatically.
-
-## Design principles
-
-- **Native first** — use official import APIs when available (CC→Codex via the same mechanism as codex-plugin-cc); otherwise keep each adapter's envelope translation thin and local.
-- **Minimal** — one core action (fork), a few support commands, zero runtime dependencies.
-- **Elegant** — one canonical IR; adapters stay thin readers/writers.
-- **Practical** — every feature maps to a real scenario; no demo features.
-- **Convenient** — zero config, deterministic source pick (current directory first), interactive fallback, output always ends with a copyable command.
-
-## Architecture
-
-```
-caf CLI (fork / list / doctor / tree / mcp)
-├─ core: canonical session IR · deterministic source resolution (cwd first)
-├─ adapters registry: read all installed agents (list/doctor/source)
-├─ claude adapter: read CC · write CC (file-level envelope)
-├─ codex adapter: read Codex · write via official import API
-├─ plugins/dsh: DeepSeek Harness (zstd JSONL) — first community plugin
-├─ tree: best-effort lineage from native metadata · mcp: stdio MCP server (legacy protocol) · i18n: en/zh
+```bash
+caf fork cc:last --at 12 --into codex
 ```
 
-Data flow:
+## Extras
 
-```
-caf fork cc:9f3a --into codex
-  CC JSONL → session IR → official import → codex resume <id>
+- **Agent integration (skills)** — copy `skills/caf/` into your agent (Codex:
+  `cp -r skills/caf ~/.agents/skills/`), then just say "fork the current session into Codex".
+  The skill passes your input language to `caf --lang` automatically.
+- **`caf tree`** — best-effort lineage across agents, from metadata each target preserves.
+- **`caf mcp`** — stdio MCP server (legacy protocol) for desktop/chat clients.
 
-caf fork codex:01J7 --into cc
-  rollout → session IR → CC envelope write → claude --resume <uuid>
-```
+## How it works
 
-## Roadmap
+The session's text turns and essential tool summaries are replayed into the target
+agent's native format: Codex via its official import API, Claude Code and DeepSeek
+Harness via thin local envelopes. `caf` keeps no database and no state — it only moves
+sessions.
 
-- **v0.1** — `fork / list / doctor`; Claude Code ↔ Codex; whole session; rollback; interactive mode; caf skill
-- **v0.2** (current) — ✅ `--at` boundary forks, ✅ `caf tree` (best-effort lineage), ✅ `caf mcp` (legacy protocol), ✅ DeepSeek Harness plugin, ✅ bilingual output; next: skills marketplace packaging, opencode/Gemini write side (needs real-machine verification), `curl | bash` installer
-- **v0.3** — write side: Cursor; read side: T2 agents visible in list/doctor
-- **v0.4+** — write side: Grok / Cline / Aider / Kimi; T3 community-driven
-- **Non-goals** — TUI/GUI, same-agent forks (use the native one), subagent forks, config migration, cloud sync
+## Limitations
 
-## Docs
+- Text turns and tool summaries are carried; config, permissions, attachments, and git
+  state are not migrated.
+- Lineage (`caf tree`) is best-effort and depends on what each target agent preserves.
 
-- [Design doc](specs/2026-08-16-cross-agent-fork-design.md) — positioning, semantics, adapter contract
-- [Vision & roadmap](docs/VISION.md) — pain points, community research, improvement directions
-- [PORTING.md](docs/PORTING.md) — how to add a new agent
+## Contributing / adding an agent
 
-Design references: [codex-plugin-cc](https://github.com/openai/codex-plugin-cc), [casr](https://github.com/Dicklesworthstone/cross_agent_session_resumer), [opal-bridge](https://github.com/1va7/opal-bridge), [cc-switch](https://github.com/farion1231/cc-switch), [superpowers](https://github.com/obra/superpowers), [agent-reach](https://github.com/Panniantong/agent-reach), [anthropics/skills](https://github.com/anthropics/skills).
+Adapters are small read/write modules — see [docs/PORTING.md](docs/PORTING.md). Design
+details live in [specs/](specs/), vision and boundaries in [docs/VISION.md](docs/VISION.md).
 
 ## License
 

@@ -34,7 +34,7 @@ CAF owns no sessions. CAF owns no state. CAF only moves sessions.
 
 - 写侧扩展：opencode / gemini / cursor（需实机验证）
 - 读侧扩展：T2 五家在 list/doctor 可见
-- skills marketplace 打包、`curl | bash` 安装器
+- skills marketplace 打包
 
 ### 长期
 
