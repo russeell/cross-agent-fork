@@ -23,11 +23,15 @@ caf fork cc:last --into codex
 uv tool install cross-agent-fork
 ```
 
-Or with pipx:
+That's it for the CLI. To use caf inside an agent (Codex / Claude Code), one more
+command installs the skill:
 
 ```bash
-pipx install cross-agent-fork
+caf install-skill codex    # or: caf install-skill claude
 ```
+
+Then just say "fork the current session into Codex" in that agent — no session ids,
+no manual copying.
 
 ## Quick start
 
@@ -67,9 +71,8 @@ caf fork cc:last --at 12 --into codex
 
 ## Extras
 
-- **Agent integration (skills)** — copy `skills/caf/` into your agent (Codex:
-  `cp -r skills/caf ~/.agents/skills/`), then just say "fork the current session into Codex".
-  The skill passes your input language to `caf --lang` automatically.
+- **Agent integration (skills)** — `caf install-skill codex` (or `claude`) installs the
+  bundled skill; the skill passes your input language to `caf --lang` automatically.
 - **`caf tree`** — best-effort lineage across agents, from metadata each target preserves.
 - **`caf mcp`** — stdio MCP server (legacy protocol) for desktop/chat clients.
 

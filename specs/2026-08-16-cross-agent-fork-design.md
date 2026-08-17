@@ -257,6 +257,7 @@ cross-agent-fork/
 │   ├── cli.py                    # fork/list/doctor/tree/mcp 命令 + 交互 + 输出契约（~585 行）
 │   ├── core.py                   # 整会话 IR + 会话探测 + 引用解析 + 工具函数（~240 行）
 │   ├── tree.py                   # 谱系构建 + 渲染（~65 行）
+│   ├── skills/caf/               # 随 wheel 打包的 skill（SKILL.md + references，零代码）
 │   ├── _rpc.py                   # stdio JSON-RPC 客户端（~80 行）
 │   ├── mcp.py                    # stdio MCP server（~140 行）
 │   ├── i18n.py                   # 中英双语（~50 行）
@@ -266,8 +267,6 @@ cross-agent-fork/
 │       └── codex.py              # 读 Codex + 官方 import（~450 行）
 ├── caf/plugins/
 │   └── dsh.py                    # DeepSeek Harness 社区插件（zstd JSONL，~310 行）
-├── skills/
-│   └── caf/                      # 英文 SKILL.md + references/（markdown，零代码）
 ├── specs/2026-08-16-cross-agent-fork-design.md
 ├── docs/                         # VISION.md（愿景）+ PORTING.md（扩展指南）
 └── tests/
@@ -293,7 +292,7 @@ Skills 工作流（§12.1 详见）：
 3. 用户问「有哪些会话」→ `caf list`
 4. fork 失败 → `caf doctor`
 
-分发：仓库内 `skills/caf/` 随 v0.1 交付；Codex 复制到 `~/.agents/skills/caf`（官方 USER 级位置）；Claude Code 走 marketplace 打包（候选）。
+分发：skill 随 wheel 打包（`caf/skills/caf/`），`caf install-skill codex|claude` 一条命令装进 agent（Codex：`~/.agents/skills/caf`；Claude：`~/.claude/skills/caf`）；marketplace 打包留作候选。
 
 ## 13. 参考与借鉴
 

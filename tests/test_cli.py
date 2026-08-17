@@ -345,6 +345,24 @@ class CliTest(unittest.TestCase):
         status = {a["agent"]: a["read"] for a in data["agents"]}
         self.assertEqual(status, {"claude": "ok", "codex": "ok", "deepseek-harness": "off"})
 
+    def test_install_skill_codex(self):
+        """install-skill copies the bundled skill into the agent's skills dir (idempotent)."""
+        agents_dir = str(Path(self.tmp) / "agents-skills")
+        code, out = _run(["install-skill", "codex"], env_overrides={"CAF_AGENTS_DIR": agents_dir})
+        self.assertEqual(code, 0)
+        self.assertIn("installed", out)
+        dst = Path(agents_dir) / "caf"
+        self.assertTrue((dst / "SKILL.md").is_file())
+        self.assertTrue((dst / "references" / "list.md").is_file())
+        # idempotent reinstall
+        code2, _ = _run(["install-skill"], env_overrides={"CAF_AGENTS_DIR": agents_dir})
+        self.assertEqual(code2, 0)
+
+    def test_install_skill_unknown_target(self):
+        code, out = _run(["install-skill", "gemini"])
+        self.assertEqual(code, 1)
+        self.assertIn("Unsupported", out)
+
     def test_output_language_follows_env(self):
         code_zh, out_zh = _run(["list", "claude"], env_overrides={"CAF_LANG": "zh"})
         self.assertEqual(code_zh, 0)

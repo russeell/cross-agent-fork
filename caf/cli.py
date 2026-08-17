@@ -5,9 +5,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 from datetime import datetime
+from pathlib import Path
 
 from caf import __version__
 from caf.adapters import Adapter, discover_adapters, get_adapter
@@ -500,6 +502,31 @@ def cmd_tree(args) -> int:
 # ---------------------------------------------------------------- main
 
 
+_SKILL_SRC = Path(__file__).parent / "skills" / "caf"
+
+
+def cmd_install_skill(args) -> int:
+    """Install the caf skill into an agent (codex default): one command, no manual copy."""
+    targets = {
+        "codex": Path(os.environ.get("CAF_AGENTS_DIR", str(Path.home() / ".agents" / "skills"))),
+        "claude": Path(os.environ.get("CAF_CLAUDE_SKILLS_DIR", str(Path.home() / ".claude" / "skills"))),
+    }
+    agent = args.agent or "codex"
+    if agent not in targets:
+        raise CafxError(_t(f"Unsupported skill target: {agent}", f"不支持的 skill 目标: {agent}"),
+                        hint="codex | claude")
+    src = _SKILL_SRC
+    if not src.is_dir():
+        raise CafxError(_t("Skill bundle not found in this installation",
+                          "当前安装中未找到 skill 包"),
+                        hint=_t("Reinstall cross-agent-fork", "重装 cross-agent-fork"))
+    dst = targets[agent] / "caf"
+    shutil.copytree(src, dst, dirs_exist_ok=True)
+    n = sum(1 for f in dst.rglob("*") if f.is_file())
+    print(_t(f"✓ installed: {dst} ({n} files)", f"✓ 已安装: {dst}（{n} 个文件）"))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="caf",
@@ -545,6 +572,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_tree.add_argument("--all", action="store_true", help="Show all edges (including same-agent)")
     p_tree.add_argument("--json", action="store_true")
     p_tree.set_defaults(func=cmd_tree)
+
+    p_skill = sub.add_parser("install-skill", help="Install the caf skill into an agent")
+    p_skill.add_argument("agent", nargs="?", default="codex",
+                         help="Target agent (codex default, or claude)")
+    p_skill.set_defaults(func=cmd_install_skill)
 
     sub.add_parser("mcp", help="stdio MCP server (desktop/chat clients)").set_defaults(func=cmd_mcp)
     return parser
