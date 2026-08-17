@@ -29,8 +29,11 @@ caf fork cc:9f3a --at 12 --into codex  # fork at turn 12 (arbitrary boundary)
 After running:
 
 1. Show the output to the user, **highlight the final `→ 继续:` line**
-2. Ask the user whether to run resume — **never start the target agent on your own**
-3. On confirmation, run `cd <project> && <agent> resume <id>` (or copy it for the user)
+2. The last line is already the action to take — **execute it yourself**:
+   - `open http://...` (dsh web target): run it — opening the GUI is safe and expected
+   - `cd <project> && <agent> resume <id>` (claude / codex / dsh-tui): ask first — starting an
+     interactive TUI uninvited interrupts the user
+3. On confirmation (or for the GUI), run the command and confirm the session shows up
 
 ### list / doctor
 

@@ -23,6 +23,11 @@
 The `→ 继续:` line is the user's next command. Show it first, ask for confirmation, then run it.
 An `Undo:` line appears only when the target supports undo (claude / dsh); codex has none.
 
+**Automatic follow-up**: when the resume line is an `open http://...` GUI command (dsh web-only
+installs), execute it immediately without asking — opening the web app is expected. Only
+interactive CLI resumes (`claude --resume`, `codex resume`, `dsh --profile tui --resume`) need
+the user's go-ahead.
+
 ## Failure handling
 
 - `✗ 未找到会话 ... → 试试: caf list --all`: list first, then retry
