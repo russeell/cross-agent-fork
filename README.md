@@ -2,13 +2,14 @@
 
 # cross-agent-fork
 
-> Continue the same session across AI agents, without losing context.
+> Bring native agent fork across agent boundaries.
 
-`caf` forks a session from Claude Code, Codex, or DeepSeek Harness into another agent —
-the conversation context and working directory come along, and the source session is
-never modified.
+`caf` brings an agent's native fork workflow across agent boundaries. It creates a
+new native session in another agent from the source session's conversation, working
+directory, and essential tool evidence. The original stays untouched.
 
 Currently supports Claude Code, Codex, and DeepSeek Harness.
+Tested on macOS / Linux.
 
 ```bash
 caf fork cc:last --into codex
@@ -31,7 +32,7 @@ To use caf inside an agent (Codex / Claude Code), install the skill too:
 caf install-skill          # codex (default); or: caf install-skill claude
 ```
 
-Then just say "fork the current session into Codex" in that agent.
+Then just say "fork this session into Codex" in that agent.
 
 ## Quick start
 
@@ -47,14 +48,13 @@ for the target agent.
 
 ## Switch agents mid-task
 
-The real flow looks like this — you are mid-task in Claude Code, need to switch to Codex:
+The real flow looks like this — you are mid-task in Claude Code and need Codex:
 
 ```text
 $ caf fork --into codex
-Forked: cc:9f3a... -> codex (24 user turns / 110 messages, original untouched)
-Written: codex thread 019abc... (official import)
-
--> resume: codex resume 019abc...
+✓ cc:9f3a... → codex:019abc...
+  source unchanged (24 user turns / 110 messages)
+→ codex resume 019abc...
 
 $ codex resume 019abc...
 > Continue where we left off.
@@ -92,18 +92,33 @@ caf fork cc:last --at 12 --into codex
 ## Extras
 
 - **Agent integration (skills)** — `caf install-skill codex` (or `claude`) installs the
-  bundled skill; then just say "fork the current session into Codex" in that agent.
+  bundled skill; then just say "fork this session into Codex" in that agent.
 
 ## How it works
 
-The session's text turns and essential tool summaries are replayed into the target
+The session's text turns and essential tool evidence are replayed into the target
 agent's native format: Codex via its official import API, Claude Code and DeepSeek
-Harness via thin local envelopes. `caf` keeps no database and no state — it only moves
-sessions.
+Harness via thin local envelopes. `caf` keeps no database and no persistent state —
+each fork creates a new native target session and leaves the source untouched.
+
+## Last live-verified
+
+| Direction | Verified |
+|---|---|
+| Claude Code → Codex | ✅ |
+| Codex → Claude Code | ✅ |
+| Claude Code → DeepSeek Harness | ✅ |
+| Codex → DeepSeek Harness | ✅ |
+| DeepSeek Harness → Claude Code | ✅ |
+| DeepSeek Harness → Codex | ✅ |
+
+Verified by forking a real mid-task session and resuming in the target agent without
+re-explaining the task. Session formats change; these dates are the honest signal:
+2026-08-17.
 
 ## Limitations
 
-- Text turns and tool summaries are carried; config, permissions, attachments, and git
+- Text turns and tool evidence are carried; config, permissions, attachments, and git
   state are not migrated.
 
 ## Contributing / adding an agent
