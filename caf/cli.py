@@ -546,7 +546,7 @@ def cmd_install_skill(args) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="caf",
-        description="Cross-agent session fork: whole session + cwd + resumable identity, "
+        description="Bring native agent fork across agent boundaries: conversation + cwd + resumable identity, "
         "original untouched",
     )
     parser.add_argument("--version", action="version", version=f"caf {__version__}")

@@ -2,11 +2,11 @@
 
 # cross-agent-fork
 
-> Bring native session fork across agent boundaries.
+> Bring native agent fork across agent boundaries.
 
-`caf` forks a session from Claude Code, Codex, or DeepSeek Harness into another agent —
-the conversation context and working directory come along. The original stays untouched;
-the new session continues from the same context.
+`caf` brings an agent's native fork workflow across agent boundaries. It creates a
+new native session in another agent from the source session's conversation, working
+directory, and essential tool evidence. The original stays untouched.
 
 Currently supports Claude Code, Codex, and DeepSeek Harness.
 Tested on macOS / Linux.
@@ -32,7 +32,7 @@ To use caf inside an agent (Codex / Claude Code), install the skill too:
 caf install-skill          # codex (default); or: caf install-skill claude
 ```
 
-Then just say "fork the current session into Codex" in that agent.
+Then just say "fork this session into Codex" in that agent.
 
 ## Quick start
 
@@ -48,7 +48,7 @@ for the target agent.
 
 ## Switch agents mid-task
 
-The real flow looks like this — you are mid-task in Claude Code, need to switch to Codex:
+The real flow looks like this — you are mid-task in Claude Code and need Codex:
 
 ```text
 $ caf fork --into codex
@@ -92,7 +92,7 @@ caf fork cc:last --at 12 --into codex
 ## Extras
 
 - **Agent integration (skills)** — `caf install-skill codex` (or `claude`) installs the
-  bundled skill; then just say "fork the current session into Codex" in that agent.
+  bundled skill; then just say "fork this session into Codex" in that agent.
 
 ## How it works
 

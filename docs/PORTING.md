@@ -1,5 +1,8 @@
 # PORTING — adding an agent
 
+CAF's scope is intentionally small: bring native agent fork across boundaries by
+creating a new native target session from the source conversation, cwd, and tool evidence.
+
 An adapter is a small read/write module in `caf/adapters/`. Add one file, register it
 in `discover_adapters()`, pass the marker test below.
 

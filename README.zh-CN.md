@@ -2,10 +2,10 @@
 
 # cross-agent-fork
 
-> 把 Agent 内置的 session fork 扩展到不同 Agent 之间。
+> 把 Agent 内置 fork 带到不同 Agent 之间。
 
-`caf` 可以把 Claude Code、Codex 和 DeepSeek Harness 里的会话 fork 到另一个 agent——
-对话上下文和工作目录一起带过去。原会话不动，新会话从同一上下文继续。
+`caf` 会基于源会话的对话、工作目录和关键工具证据，在另一个 Agent 里创建新的原生可恢复会话。
+原会话保持不变。
 
 当前支持 Claude Code、Codex、DeepSeek Harness。
 已在 macOS / Linux 验证。
@@ -31,7 +31,7 @@ pipx install git+https://github.com/russeell/cross-agent-fork.git
 caf install-skill          # codex（默认）；或: caf install-skill claude
 ```
 
-装完后直接说"把当前会话 fork 到 Codex"即可。
+装完后直接说"把这个会话 fork 到 Codex"即可。
 
 ## 快速开始
 
@@ -46,7 +46,7 @@ caf fork cc:last --at 12 --into codex  # 从第 12 轮结束处 fork（前 1~12 
 
 ## 做到一半换 agent
 
-真实流程是这样的——你在 Claude Code 里做到一半，想换到 Codex：
+真实流程是这样的——你在 Claude Code 里做到一半，想交给 Codex：
 
 ```text
 $ caf fork --into codex
@@ -86,7 +86,7 @@ caf fork cc:last --at 12 --into codex
 
 ## 附加能力
 
-- **Agent 集成（skills）** — `caf install-skill codex`（或 `claude`）自动安装随包携带的 skill；装完后直接说"把当前会话 fork 到 Codex"即可。
+- **Agent 集成（skills）** — `caf install-skill codex`（或 `claude`）自动安装随包携带的 skill；装完后直接说"把这个会话 fork 到 Codex"即可。
 
 ## 工作原理
 
