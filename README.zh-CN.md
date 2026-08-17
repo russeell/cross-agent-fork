@@ -61,7 +61,7 @@ caf doctor                           # 健康检查与修复建议
 |---|---|
 | 新手/不确定 | `caf fork` — 交互引导，回车可过 |
 | 老手/紧急 | `caf fork cc:last --into codex` — 一行完成 |
-| 正在 A 里干活 | `caf fork --into codex` — 自动感知当前会话，零参数 |
+| 正在 A 里干活 | `caf fork --into codex` — 自动选当前目录最新会话，零参数 |
 | 在 agent 里（装 skill 后） | 「把当前会话 fork 到 Codex」— 对话即入口 |
 
 ## 在 agent 里使用（skills）
@@ -78,13 +78,13 @@ agent 会自动调用 caf 完成，不需要记任何会话 id。skill 指令为
 - **简洁** — 一个核心动作（fork）+ 少量支撑命令，零运行时依赖
 - **优雅** — 唯一的手写格式翻译只有 Codex→CC 信封（~250 行）
 - **实用** — 每个功能对应真实场景，不做演示功能
-- **便捷** — 零配置、当前会话感知、交互兜底、输出永远是「可复制的一条命令」
+- **便捷** — 零配置、确定性源选择（当前目录优先）、交互兜底、输出永远是「可复制的一条命令」
 
 ## 架构
 
 ```
 caf CLI（fork / list / doctor / tree / mcp）
-├─ core: 整会话 IR · 当前会话感知
+├─ core: 整会话 IR · 确定性源选择（当前目录优先）
 ├─ adapters 注册表: 读所有已装 agent（list/doctor/源）
 ├─ claude adapter: 读 CC · 写 CC（文件级信封）
 ├─ codex adapter: 读 Codex · 写（官方 import API）

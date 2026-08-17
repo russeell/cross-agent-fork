@@ -7,7 +7,6 @@ import json
 import os
 import subprocess
 import sys
-import urllib.request
 from datetime import datetime
 
 from caf import __version__
@@ -16,7 +15,6 @@ from caf.i18n import extract_lang, set_lang, t as _t
 from caf.core import (
     CafxError,
     SessionMeta,
-    detect_active_agent,
     disp_width,
     parse_session_ref,
     pick_recent_session,
@@ -159,10 +157,11 @@ def _pick_session(rows: list[SessionMeta], raw: str) -> SessionMeta:
     if not raw:
         return rows[0]
     if raw.isdigit():
-        try:
-            return rows[int(raw) - 1]
-        except IndexError:
-            raise CafxError(_t(f"Invalid choice: {raw}", f"无效选择: {raw}"))
+        idx = int(raw)
+        if not 1 <= idx <= len(rows):
+            raise CafxError(_t(f"Invalid choice: {raw}", f"无效选择: {raw}"),
+                            hint=_t(f"Enter 1-{len(rows)}", f"输入 1-{len(rows)}"))
+        return rows[idx - 1]
     low = raw.lower()
     prefix_matches = [m for m in rows if m.session_id.startswith(low)
                       or f"{m.provider_id}:{m.session_id}".startswith(low)]
@@ -183,8 +182,9 @@ def _pick_session(rows: list[SessionMeta], raw: str) -> SessionMeta:
 # ---------------------------------------------------------------- fork
 
 
-def _resolve_source(adapters: list[Adapter], ref: str | None, active: str | None = None):
-    """ref -> (adapter, meta); without ref: active session -> most recent."""
+def _resolve_source(adapters: list[Adapter], ref: str | None, into: str | None = None):
+    """ref -> (adapter, meta); without ref: deterministic — current cwd first,
+    then any agent's most recent; never the target agent."""
     if ref:
         agent_id, sid = parse_session_ref(ref, adapters)
         adapter = get_adapter(adapters, agent_id)
@@ -197,23 +197,28 @@ def _resolve_source(adapters: list[Adapter], ref: str | None, active: str | None
                               f"未找到会话 {agent_id}:{sid}"), hint="caf list --all")
         return adapter, meta
 
-    if active is None:
-        active = detect_active_agent()
-    if active:
-        adapter = get_adapter(adapters, active)
-        recent = pick_recent_session([adapter])
-        if recent:
-            return adapter, recent
-    recent = pick_recent_session(adapters, project_dir=os.getcwd())
+    others = [a for a in adapters if a.agent_id != into]
+    recent = pick_recent_session(others, project_dir=os.getcwd())
     if recent:
-        return get_adapter(adapters, recent.provider_id), recent
+        return get_adapter(others, recent.provider_id), recent
+    recent = pick_recent_session(others)
+    if recent:
+        return get_adapter(others, recent.provider_id), recent
     raise CafxError(_t("No forkable session found", "未找到可 fork 的会话"), hint="caf list --all")
 
 
 def _resolve_target(adapters: list[Adapter], source_meta: SessionMeta, into: str | None) -> Adapter:
     others = [a for a in adapters if a.agent_id != source_meta.provider_id]
     if into:
-        return get_adapter(adapters, into)
+        target = get_adapter(adapters, into)
+        if target.agent_id == source_meta.provider_id:
+            raise CafxError(
+                _t("Source and target agents must be different",
+                  "源和目标 agent 必须不同"),
+                hint=_t("Use the agent's native fork for same-agent forks",
+                       "同 agent fork 请用该 agent 的原生 fork"),
+            )
+        return target
     if len(others) == 1:
         return others[0]
     if not others:
@@ -236,7 +241,7 @@ def _resolve_target(adapters: list[Adapter], source_meta: SessionMeta, into: str
         raise CafxError(_t(f"Invalid choice: {idx}", f"无效选择: {idx}"))
 
 
-def _fork_interactive(adapters: list[Adapter], into: str | None = None):
+def _fork_interactive(adapters: list[Adapter]):
     print(_discovery_line(adapters))
     cwd = os.getcwd()
     usable = sorted(_usable_sessions(adapters), key=lambda m: m.last_active_at, reverse=True)
@@ -256,7 +261,7 @@ def _fork_interactive(adapters: list[Adapter], into: str | None = None):
                   "> 源会话 [回车=最近 / 编号 / id 前缀 / 标题关键词]: "))
     chosen = _pick_session(ordered, raw)
     src_adapter = get_adapter(adapters, chosen.provider_id)
-    tgt = _resolve_target(adapters, chosen, into)
+    tgt = _resolve_target(adapters, chosen, None)
     print(_t(f"  Fork {chosen.provider_id}:{chosen.session_id[:12]} (whole session) -> {tgt.agent_id}; "
             "original untouched",
             f"  将 fork {chosen.provider_id}:{chosen.session_id[:12]} 整会话 → {tgt.agent_id}（原会话不动）"))
@@ -287,21 +292,19 @@ def cmd_fork(args) -> int:
     if args.ref:
         src_adapter, source_meta = _resolve_source(adapters, args.ref)
         target = _resolve_target(adapters, source_meta, args.into)
+    elif _stdin_isatty() and not args.into:
+        # interactive picker (Enter = most recent); deterministic rules apply without a TTY
+        src_adapter, source_meta, target = _fork_interactive(adapters)
     else:
-        active = detect_active_agent()
-        recent = pick_recent_session(adapters, project_dir=os.getcwd()) if not active else None
-        if _stdin_isatty() and not active and not recent:
-            src_adapter, source_meta, target = _fork_interactive(adapters, args.into)
-        else:
-            src_adapter, source_meta = _resolve_source(adapters, None, active=active)
-            target = _resolve_target(adapters, source_meta, args.into)
+        src_adapter, source_meta = _resolve_source(adapters, None, into=args.into)
+        target = _resolve_target(adapters, source_meta, args.into)
 
     ir = src_adapter.load_session(source_meta.session_id)
     target_name = target.agent_id
 
     fork_note = ""
     user_turns, total_items = _turn_stats(ir.turns)
-    if args.at:
+    if args.at is not None:
         boundary = "before" if args.before else "through"
         ir.turns, warning = slice_turns(ir.turns, args.at, boundary)
         ir.modified = True
@@ -425,18 +428,6 @@ def cmd_list(args) -> int:
 # ---------------------------------------------------------------- doctor
 
 
-def _check_pypi() -> str:
-    try:
-        with urllib.request.urlopen(
-            "https://pypi.org/pypi/cross-agent-fork/json", timeout=3
-        ) as resp:
-            latest = json.load(resp)["info"]["version"]
-        return (_t(f"latest: {latest}", f"最新版: {latest}") if latest != __version__
-                else _t(f"up to date ({__version__})", f"已是最新版 ({__version__})"))
-    except Exception:
-        return _t("PyPI check unavailable (offline)", "PyPI 检查不可用（离线）")
-
-
 def cmd_doctor(args) -> int:
     discovered = discover_adapters()
     rows = []
@@ -454,7 +445,7 @@ def cmd_doctor(args) -> int:
         })
 
     if args.json:
-        print(json.dumps({"agents": rows, "pypi": _check_pypi()}, ensure_ascii=False, indent=2))
+        print(json.dumps({"agents": rows}, ensure_ascii=False, indent=2))
         return 0
 
     print(_discovery_line([a for a in discovered if a.detect()]))
@@ -466,7 +457,6 @@ def cmd_doctor(args) -> int:
               f"v{r['version'] or '?'}  {r['store']}")
         if r["write"] == "off" and r["install_hint"]:
             print(_t(f"      install: {r['install_hint']}", f"      安装: {r['install_hint']}"))
-    print("· " + _check_pypi())
     return 0
 
 

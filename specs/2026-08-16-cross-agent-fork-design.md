@@ -34,7 +34,7 @@ codex-plugin-cc 已覆盖「CC→Codex 整会话」（官方导入）。caf 的�
 2. **简洁**：一个核心动作（fork）+ 两个支撑命令（list/doctor），零运行时依赖
 3. **信封翻译**：唯一的手写格式翻译 = Codex→CC 写侧（整会话文本 + 工具摘要行）
 4. **实用**：每个功能对应真实场景（限流切换、换思路、双 agent 工作流）
-5. **便捷**：零配置、当前会话感知、交互兜底、输出以「一条可粘贴命令」结尾
+5. **便捷**：零配置、确定性源选择（当前目录优先）、交互兜底、输出以「一条可粘贴命令」结尾
 
 ## 3. 核心概念
 
@@ -75,10 +75,10 @@ caf fork [ref] [--at N] [--through|--before] [--into <agent>] [--dry-run] [-c/--
 
 | 旗标 | 默认 | 说明 |
 |---|---|---|
-| `ref` | 无 → 当前会话感知 | 源会话；依次尝试：当前活动会话 → `cc:last` → 交互模式 |
-| `--at N` | 最后一个完成轮 | 分叉点（用户消息序号，before/through 模型） |
+| `ref` | 无 → 确定性规则 | 源会话；无 ref 时：当前 cwd 最新非空会话（排除 `--into` 目标）→ 全局最新 → 交互（仅 TTY）；不依赖进程探测 |
+| `--at N` | 最后一个完成轮 | 分叉点（用户消息序号，before/through 模型；`--at 0` 报错） |
 | `--through` / `--before` | `--through` | 边界语义（仅与 `--at` 搭配） |
-| `--into` | 另一个已装 agent | 目标 agent（唯一时直接用） |
+| `--into` | 另一个已装 agent | 目标 agent（唯一时直接用；source == target 报错） |
 | `--dry-run` | 关 | 只预览不写入 |
 | `-c` / `--copy` | 关 | 复制恢复命令到剪贴板 |
 | `--json` | 关 | 机器友好输出 |
@@ -125,7 +125,7 @@ caf list [--agent <agent>] [--all] [--json]
 
 ### 4.3 `caf doctor`
 
-健康检查：各 agent 安装状态、存储路径（含桌面 thread history）、版本、tier（full/degraded/off）、修复建议，输出末尾附 PyPI 新版本提示。fork 失败时跑 `caf doctor` 自诊断。
+健康检查：各 agent 安装状态、存储路径（含桌面 thread history）、版本、read/write 三档状态（ok / planned / off）、修复建议；**只检查本地能力，无联网请求**。fork 失败时跑 `caf doctor` 自诊断。
 
 ### 4.4 用户使用方案
 
@@ -135,7 +135,7 @@ caf list [--agent <agent>] [--all] [--json]
 |---|---|---|
 | 新手/不确定 | `caf fork` | 交互引导，回车可过 |
 | 老手/紧急 | `caf fork cc:last --into codex` | 一行完成 |
-| 最急（正在 A 里干活） | `caf fork --into codex` | 当前会话感知，零参数 |
+| 最急（正在 A 里干活） | `caf fork --into codex` | 当前目录最新会话，零参数 |
 
 首次运行即 onboarding：任何命令首次执行时打印「✓ 发现: Claude Code v2.1.187（12 个会话）+ Codex v0.148.0（9 个会话）」。
 
@@ -286,7 +286,7 @@ cross-agent-fork/
 
 Skills 工作流（§12.1 详见）：
 
-1. 用户说「把当前会话 fork 到 X」→ 运行 `caf fork --into X`（当前会话感知自动定位，agent 无需知道 session id）
+1. 用户说「把当前会话 fork 到 X」→ 运行 `caf fork --into X`（当前目录优先自动定位，agent 无需知道 session id）
 2. 展示 `→ 继续:` 命令，询问是否执行 resume（不擅自启动目标 agent）
 3. 用户问「有哪些会话」→ `caf list`
 4. fork 失败 → `caf doctor`

@@ -59,18 +59,6 @@ def _is_injected_text(text: str) -> bool:
     return bool(t) and t.startswith(_INJECTED_PREFIXES)
 
 
-def _first_user_text(files) -> str:
-    """First user message of a session (skips injected system blocks), capped at 80 chars."""
-    for f in sorted(files):
-        for ev in read_jsonl(f):
-            p = ev.get("payload") or {}
-            if ev.get("type") == "response_item" and p.get("type") == "message" and p.get("role") == "user":
-                text = " ".join(_payload_text(p).split())
-                if text and not text.lower().startswith(_POLLUTED_PREFIXES):
-                    return text[:80]
-    return ""
-
-
 def _codex_bin() -> Optional[str]:
     """The codex executable: env override (tests/power users) -> PATH."""
     return os.environ.get("CAF_CODEX_BIN") or shutil.which("codex")
@@ -184,14 +172,48 @@ def _session_id_from_file(path: Path) -> Optional[str]:
     return None
 
 
-def _count_user_turns(path: Path) -> int:
-    """Fast user-message count: only inspect the payload head (avoids raw JSON embedded in transcripts)."""
-    modern = 0
-    legacy = 0
+_MAX_TEXT_LINE = 256 * 1024  # skip first-user-text extraction for huge lines (attachments/base64)
+
+
+def _user_text_from_line(line: bytes) -> str:
+    """First non-polluted user text from one rollout line (title fallback), capped at 80 chars."""
+    try:
+        ev = json.loads(line)
+    except json.JSONDecodeError:
+        return ""
+    p = ev.get("payload") or {}
+    if ev.get("type") != "response_item" or p.get("type") != "message" or p.get("role") != "user":
+        return ""
+    text = " ".join(_payload_text(p).split())
+    if not text or text.lower().startswith(_POLLUTED_PREFIXES):
+        return ""
+    return text[:80]
+
+
+def _analyze_rollout(path: Path) -> Optional[dict]:
+    """One pass over a rollout: id / cwd / parent / user turns / first user text / mtime."""
+    sid = cwd = parent = None
+    first_text = ""
+    modern = legacy = 0
     has_response_item = False
     try:
         with open(path, "rb") as f:
             for line in f:
+                if b'"session_meta"' in line and (sid is None or cwd is None or parent is None):
+                    try:
+                        ev = json.loads(line)
+                    except json.JSONDecodeError:
+                        ev = None
+                    if ev:
+                        p = ev.get("payload") or {}
+                        if sid is None:
+                            sid = p.get("id") or p.get("session_id") or None
+                        if cwd is None:
+                            cwd = p.get("cwd") or None
+                        if parent is None:
+                            pid = p.get("parent_thread_id")
+                            if isinstance(pid, str) and pid:
+                                parent = f"codex:{pid}"
                 if b'"response_item"' in line:
                     has_response_item = True
                     i = line.find(b'"payload"')
@@ -200,32 +222,21 @@ def _count_user_turns(path: Path) -> int:
                         if b'"type":"message"' in head and b'"role":"user"' in head:
                             if not _line_has_injection(line):
                                 modern += 1
+                                if not first_text and len(line) < _MAX_TEXT_LINE:
+                                    first_text = _user_text_from_line(line)
                 elif b'"type":"user_message"' in line:
                     legacy += 1
     except OSError:
-        return 0
-    return modern if has_response_item else legacy
-
-
-def _meta_cwd(path: Path) -> Optional[str]:
-    """Read cwd from the session_meta at the top of the file (cheap, first line)."""
-    for ev in read_jsonl(path):
-        if ev.get("type") == "session_meta":
-            p = ev.get("payload") or {}
-            return p.get("cwd") or None
-    return None
-
-
-def _session_parent(path: Path) -> Optional[str]:
-    """Native lineage: session_meta.parent_thread_id -> "codex:<id>"."""
-    for ev in read_jsonl(path):
-        if ev.get("type") == "session_meta":
-            p = ev.get("payload") or {}
-            pid = p.get("parent_thread_id")
-            if isinstance(pid, str) and pid:
-                return f"codex:{pid}"
-            return None
-    return None
+        return None
+    if not sid:
+        return None
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return None
+    return {"sid": sid, "cwd": cwd, "parent": parent,
+            "turns": modern if has_response_item else legacy,
+            "first_user_text": first_text, "mtime": mtime}
 
 
 class CodexAdapter(Adapter):
@@ -271,24 +282,21 @@ class CodexAdapter(Adapter):
         threads = _threads_index(_codex_home())
         index = self._load_index()
 
-        def analyze(f: Path):
-            sid = _session_id_from_file(f)
-            if not sid:
-                return None
-            return (sid, _meta_cwd(f), _count_user_turns(f),
-                    f.stat().st_mtime, _session_parent(f))
-
-        results = [r for r in map(analyze, _rollout_files()) if r]
-
         groups: dict[str, dict] = {}
-        for sid, cwd, turns, mtime, parent in results:
-            group = groups.setdefault(sid, {"turns": 0, "mtime": 0.0, "cwd": None, "parent": None})
-            group["turns"] += turns
-            group["mtime"] = max(group["mtime"], mtime)
-            if cwd:
-                group["cwd"] = cwd
-            if parent:
-                group["parent"] = parent
+        for f in _rollout_files():
+            info = _analyze_rollout(f)
+            if not info:
+                continue
+            group = groups.setdefault(info["sid"],
+                                      {"turns": 0, "mtime": 0.0, "cwd": None, "parent": None, "first": ""})
+            group["turns"] += info["turns"]
+            group["mtime"] = max(group["mtime"], info["mtime"])
+            if info["cwd"]:
+                group["cwd"] = info["cwd"]
+            if info["parent"]:
+                group["parent"] = info["parent"]
+            if not group["first"]:
+                group["first"] = info["first_user_text"]
 
         out: list[SessionMeta] = []
         for sid, group in groups.items():
@@ -297,8 +305,7 @@ class CodexAdapter(Adapter):
             if title and title.strip().lower().startswith(_POLLUTED_PREFIXES):
                 # threads-table titles can be polluted by review prompts -> fall back to
                 # the first user message (skipping injected blocks)
-                files = [f for f in _rollout_files() if _session_id_from_file(f) == sid]
-                fallback = _first_user_text(files)
+                fallback = group["first"]
                 if fallback:
                     title = fallback
             cwd = info.get("cwd") or group["cwd"]

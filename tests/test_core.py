@@ -106,6 +106,24 @@ class CoreTest(unittest.TestCase):
         self.assertEqual(len(sliced), 6)
         self.assertIn("unfinished", warning)
 
+    def test_slice_includes_all_assistant_segments(self):
+        """Turn N = user N plus everything up to the next user (tool loops produce several assistants)."""
+        turns = [
+            Turn(1, "user", "u1"), Turn(2, "assistant", "a1"), Turn(3, "assistant", "a2"),
+            Turn(4, "user", "u2"), Turn(5, "assistant", "a3"),
+        ]
+        sliced, warning = slice_turns(turns, 1, "through")
+        self.assertEqual([t.text for t in sliced], ["u1", "a1", "a2"])
+        self.assertIsNone(warning)
+        sliced2, _ = slice_turns(turns, 2, "through")
+        self.assertEqual([t.text for t in sliced2], ["u1", "a1", "a2", "u2", "a3"])
+
+    def test_slice_consecutive_users_keeps_only_user_n(self):
+        """Multi-part input (user N directly followed by user N+1): turn N is just user N."""
+        turns = [Turn(1, "user", "u1"), Turn(2, "user", "u2"), Turn(3, "assistant", "a2")]
+        sliced, _ = slice_turns(turns, 1, "through")
+        self.assertEqual([t.text for t in sliced], ["u1"])
+
     def test_slice_out_of_range(self):
         turns = self._turns(2)
         with self.assertRaises(CafxError):

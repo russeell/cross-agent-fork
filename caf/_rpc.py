@@ -36,12 +36,8 @@ class RpcClient:
                         hint=_t("Check codex install/login with caf doctor", "caf doctor 检查 codex 安装与登录"))
 
     def wait_for(self, method: str, timeout_s: int) -> dict:
-        """Block until a server notification arrives; returns its params."""
-        deadline = time.monotonic() + timeout_s
-        while time.monotonic() < deadline:
-            line = self.proc.stdout.readline()
-            if not line:
-                break
+        """Block until a server notification arrives; real timeout via select-polled reads."""
+        for line in self._read_stdout(timeout_s):
             try:
                 obj = json.loads(line)
             except json.JSONDecodeError:

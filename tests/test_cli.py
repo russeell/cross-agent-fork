@@ -189,6 +189,41 @@ class CliTest(unittest.TestCase):
         self.assertIn("Error", out)
         self.assertIn("try", out)
 
+    def test_fork_at_zero_rejected(self):
+        """--at 0 must error like --at < 0, not silently fork the whole session."""
+        code, out = _run(["fork", "cc:00000000", "--at", "0", "--into", "codex", "--dry-run"])
+        self.assertEqual(code, 1)
+        self.assertIn("Invalid fork point", out)
+
+    def test_fork_same_agent_rejected(self):
+        """--into with the source agent must be rejected (cross-agent only)."""
+        code, out = _run(["fork", "cc:00000000", "--into", "cc"])
+        self.assertEqual(code, 1)
+        self.assertIn("different", out)
+
+    def test_fork_default_source_deterministic(self):
+        """No ref: current-cwd first, then most recent; never the target agent."""
+        import caf.cli as cli_mod
+        old = cli_mod._stdin_isatty
+        cli_mod._stdin_isatty = lambda: False
+        try:
+            code, out = _run(["fork", "--into", "codex", "--dry-run"])
+        finally:
+            cli_mod._stdin_isatty = old
+        self.assertEqual(code, 0)
+        self.assertIn("Preview: cc:00000000", out)  # codex excluded as target -> cc source
+        self.assertIn("codex resume <new-id>", out)
+
+    def test_pick_session_rejects_zero_and_out_of_range(self):
+        """Interactive picker: 0 must not wrap to the last session."""
+        import caf.cli as cli_mod
+        from caf.core import CafxError, SessionMeta
+        rows = [SessionMeta("cc", "s1", turns=1), SessionMeta("cc", "s2", turns=1)]
+        for bad in ("0", "3", "99"):
+            with self.assertRaises(CafxError):
+                cli_mod._pick_session(rows, bad)
+        self.assertEqual(cli_mod._pick_session(rows, "2").session_id, "s2")
+
     def test_fork_unknown_session(self):
         code, out = _run(["fork", "cc:zzzz", "--into", "codex"])
         self.assertEqual(code, 1)
@@ -281,17 +316,14 @@ class CliTest(unittest.TestCase):
         feed = io.StringIO("019e0000\n\n")
         out = io.StringIO()
         old_stdin, old_isatty = sys.stdin, cli_mod._stdin_isatty
-        old_active = cli_mod.detect_active_agent
         sys.stdin = feed
         cli_mod._stdin_isatty = lambda: True
-        cli_mod.detect_active_agent = lambda: None  # 模拟无前台 agent
         try:
             with contextlib.redirect_stdout(out):
                 code = cli_mod.main(["fork", "--dry-run"])
         finally:
             sys.stdin = old_stdin
             cli_mod._stdin_isatty = old_isatty
-            cli_mod.detect_active_agent = old_active
         self.assertEqual(code, 0)
         text = out.getvalue()
         self.assertIn("Preview: codex:019e0000", text)

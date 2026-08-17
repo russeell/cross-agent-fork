@@ -61,7 +61,7 @@ Every fork ends with a **paste-ready resume command**:
 |---|---|
 | New / unsure | `caf fork` — interactive picker, Enter accepts |
 | Experienced / in a hurry | `caf fork cc:last --into codex` — one line |
-| In the middle of agent A | `caf fork --into codex` — auto-detects the active session, zero args |
+| In the middle of agent A | `caf fork --into codex` — auto-picks the most recent session in this directory, zero args |
 | Inside an agent (with the skill installed) | "fork the current session into Codex" — conversation is the entry point |
 
 ## Use it inside your agent (skills)
@@ -78,13 +78,13 @@ The agent calls `caf` for you — no session ids to remember. The skill is Engli
 - **Minimal** — one core action (fork), a few support commands, zero runtime dependencies.
 - **Elegant** — the only hand-written format translation is the Codex→CC envelope (~250 lines).
 - **Practical** — every feature maps to a real scenario; no demo features.
-- **Convenient** — zero config, active-session detection, interactive fallback, output always ends with a copyable command.
+- **Convenient** — zero config, deterministic source pick (current directory first), interactive fallback, output always ends with a copyable command.
 
 ## Architecture
 
 ```
 caf CLI (fork / list / doctor / tree / mcp)
-├─ core: canonical session IR · active-session detection
+├─ core: canonical session IR · deterministic source resolution (cwd first)
 ├─ adapters registry: read all installed agents (list/doctor/source)
 ├─ claude adapter: read CC · write CC (file-level envelope)
 ├─ codex adapter: read Codex · write via official import API

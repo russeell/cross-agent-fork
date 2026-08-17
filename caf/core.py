@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -127,31 +126,6 @@ def parse_session_ref(ref: str, adapters) -> tuple[str, str]:
     raise CafxError(_t(f"Session not found: {ref}", f"未找到会话 {ref}"), hint="caf list --all")
 
 
-def detect_active_agent() -> Optional[str]:
-    """Detect the foreground agent via ps (iterm-agent-fork approach)."""
-    try:
-        out = subprocess.run(
-            ["ps", "-axo", "pid=,tty=,stat=,command="],
-            capture_output=True, text=True, timeout=5,
-        ).stdout
-    except Exception:
-        return None
-    for line in out.splitlines():
-        parts = line.strip().split(None, 3)
-        if len(parts) < 4:
-            continue
-        _pid, tty, stat, cmd = parts
-        if tty == "??" or "+" not in stat:
-            continue
-        tokens = cmd.split()
-        base = Path(tokens[0]).name if tokens else ""
-        if base == "codex" or "/codex" in cmd:
-            return "codex"
-        if base == "claude" or "/claude" in cmd:
-            return "cc"
-    return None
-
-
 def pick_recent_session(adapters, project_dir: Optional[str] = None) -> Optional[SessionMeta]:
     """Pick the most recent non-empty session; prefer project_dir when given (empty-session noise filter)."""
     best: Optional[SessionMeta] = None
@@ -173,7 +147,7 @@ def pick_recent_session(adapters, project_dir: Optional[str] = None) -> Optional
 def slice_turns(turns: list[Turn], at: int, boundary: str = "through") -> tuple[list[Turn], Optional[str]]:
     """Slice IR turns by user-message sequence (opencode before/through model).
 
-    - `--at N --through` (default): include user N and its completed assistant reply
+    - `--at N --through` (default): include user N and everything after it up to the next user
     - `--at N --before`: stop strictly before user N (equivalent to through N-1)
     - Unfinished turn N (no assistant after user N): through -> cut to the last complete turn + warn
     Returns (sliced turns, warning or None).
@@ -199,11 +173,11 @@ def slice_turns(turns: list[Turn], at: int, boundary: str = "through") -> tuple[
             hint=_t("Check turns with caf list", "caf list 查看轮数"),
         )
 
-    end = idx_user
     warning: Optional[str] = None
-    if idx_user + 1 < len(turns) and turns[idx_user + 1].role == "assistant":
-        end = idx_user + 1
-    elif idx_user == len(turns) - 1:
+    end = idx_user
+    while end + 1 < len(turns) and turns[end + 1].role != "user":
+        end += 1  # everything after user N up to the next user belongs to turn N
+    if end == idx_user and idx_user == len(turns) - 1:
         # unfinished turn at the end of the session (DSH rule: only fork completed turns)
         end = idx_user - 1
         while end >= 0 and turns[end].role != "assistant":
@@ -215,8 +189,6 @@ def slice_turns(turns: list[Turn], at: int, boundary: str = "through") -> tuple[
             )
         warning = _t(f"Turn {at} is unfinished; truncated to turn {at - 1}",
                     f"第 {at} 轮未完成，已截断到第 {at - 1} 轮")
-    # consecutive user messages (injections/multi-part input): include only user N;
-    # its reply belongs to a later turn
     return turns[: end + 1], warning
 
 
