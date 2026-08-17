@@ -133,6 +133,13 @@ class DshPluginTest(unittest.TestCase):
         self.assertEqual(len(payloads), 5)  # header + turn/start + user + assistant + turn/end
         self.assertTrue(all(p.endswith(b"\n") and len(p.strip()) for p in payloads))
         self.assertIn(b'"type": "session"', payloads[0])
+        import json
+        events = [json.loads(p) for p in payloads[1:]]
+        self.assertEqual([e["seq"] for e in events], list(range(len(events))))  # dsh: events[i].seq === i
+        user = next(e for e in events if e["type"] == "user/message")
+        self.assertNotEqual(user["data"]["id"], "")  # dsh: message events require an id
+        assistant = next(e for e in events if e["type"] == "assistant/message")
+        self.assertNotEqual(assistant["data"]["message"]["id"], "")
 
     def test_read_single_frame_still_compatible(self):
         """Old single-frame logs (pre-frame-per-line dsh) must still decompress."""

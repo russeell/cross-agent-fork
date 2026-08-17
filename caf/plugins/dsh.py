@@ -274,7 +274,7 @@ class DshAdapter(Adapter):
         sid = f"session-{uuid4()}"
         now_ms = int(time.time() * 1000)
         events: list[dict] = []
-        seq = 1
+        seq = 0  # dsh requires contiguous seq starting at 0 (events[i].seq === i)
         turn = 0
         first_user_seq: Optional[int] = None
         turn_open = False
@@ -292,7 +292,7 @@ class DshAdapter(Adapter):
                 if first_user_seq is None:
                     first_user_seq = seq
                 events.append({"type": "user/message", "seq": seq, "time": now_ms,
-                               "data": {"role": "user",
+                               "data": {"id": str(uuid4()), "role": "user",
                                         "content": [{"type": "text", "text": t.text}],
                                         "source": {"kind": "user"}}})
                 seq += 1
@@ -301,6 +301,7 @@ class DshAdapter(Adapter):
                 events.append({"type": "assistant/message", "seq": seq, "time": now_ms,
                                "data": {"turn": turn, "step": 1,
                                         "message": {
+                                            "id": str(uuid4()),
                                             "role": "assistant",
                                             "content": [{"type": "text", "text": text}] if text else [],
                                             "source": {"kind": "model", "provider": "caf",
