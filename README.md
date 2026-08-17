@@ -21,17 +21,17 @@ caf fork cc:last --into codex
 
 Paste this into the agent you want to use it in:
 
-> Install cross-agent-fork (caf): `pipx install git+https://github.com/russeell/cross-agent-fork.git`,
-> then run `caf install-skill` for the current agent (codex or claude).
+> Install cross-agent-fork:
+> https://raw.githubusercontent.com/russeell/cross-agent-fork/main/docs/install.md
 
-Manually, that is:
+The agent reads the guide and installs the CLI plus its skill for you. Manually, that is:
 
 ```bash
 pipx install git+https://github.com/russeell/cross-agent-fork.git
 caf install-skill          # codex (default); or: caf install-skill claude
 ```
 
-Then just say "fork the current session into Codex" in that agent.
+Once installed, just say "fork the current session into Codex" in that agent.
 
 ## Quick start
 

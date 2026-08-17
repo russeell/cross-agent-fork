@@ -20,10 +20,10 @@ caf fork cc:last --into codex
 
 在你想用的 agent 对话里粘贴这段：
 
-> 帮我安装 cross-agent-fork（caf）：运行 `pipx install git+https://github.com/russeell/cross-agent-fork.git`，
-> 然后运行 `caf install-skill`（当前是 Codex 用 codex，Claude Code 用 claude）把 skill 装进当前 agent。
+> 帮我安装 cross-agent-fork：
+> https://raw.githubusercontent.com/russeell/cross-agent-fork/main/docs/install.md
 
-手动安装即：
+agent 会读取安装指南，帮你装好 CLI 和 skill。手动安装即：
 
 ```bash
 pipx install git+https://github.com/russeell/cross-agent-fork.git
