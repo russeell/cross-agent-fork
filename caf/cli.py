@@ -115,15 +115,15 @@ def _render_table(rows: list[SessionMeta], current_cwd: str, show_marker: bool =
     (numbered only for interactive pickers; a '1.' prefix would be rendered as a
     Markdown ordered list by chat clients)."""
     head = f"  {'#':>2}  " if numbered else "  "
-    print(head + f"{_pad(_t('Session', '会话'), 20)}{_pad(_t('Title', '标题'), 36)}"
+    print(head + f"{_pad(_t('Session', '会话'), 18)}  {_pad(_t('Title', '标题'), 28)}"
           f"{_t('Turns', '轮'):>4}  {_t('Time', '时间')}")
     for i, m in enumerate(rows, 1):
-        title = _pad(truncate(m.title) or _t("(untitled)", "(无标题)"), 36)
-        sid = _pad(f"{m.provider_id}:{m.session_id[:12]}", 20)
+        title = _pad(truncate(m.title, 28) or _t("(untitled)", "(无标题)"), 28)
+        sid = _pad(f"{m.provider_id}:{m.session_id[:12]}", 18)
         marker = (_t("  <- current project", "  ← 当前项目")
                   if (show_marker and m.project_dir == current_cwd) else "")
         prefix = f"  {i:>2}. " if numbered else "  "
-        print(f"{prefix}{sid}{title}{m.turns:>4}  "
+        print(f"{prefix}{sid}  {title}{m.turns:>4}  "
               f"{_human_time(m.last_active_at):<9}{marker}")
 
 

@@ -4,21 +4,23 @@
 caf list              # sessions (recent 20 by default, all agents)
 caf list --all        # everything
 caf list -s <keyword> # title search
-caf list --json       # machine-readable
+caf list --json       # machine-readable (the source of truth for chat rendering)
 ```
 
 Columns: `Session  Title  Turns  Time` (no row numbers — the CLI prints identifiers
 leftmost, gh/kubectl style). After the user picks a session, continue with
 `caf fork <agent>:<id> --into <target>`.
 
-**Rendering discipline (chat / desktop clients)**: do not paste raw CLI text and do not
-summarize — render the list as a **complete Markdown table** (every visible row in the table),
-then add **one** short next-step suggestion (`--all` / `--limit N` / `-s keyword`).
-Raw text is fine for real terminals only.
+**Rendering discipline (chat / desktop clients) — required**:
 
-**Why**: the CLI's plain-text columns only align in monospaced terminals; chat clients
-render CJK widths differently and may interpret a `1.` prefix as an ordered list.
-The Markdown table moves alignment to the renderer, so it is always correct.
+1. Get the data: `caf list --json` (respect `--agent` / `-s` / `--limit` from the user's request).
+2. Render a **complete Markdown table** from that JSON: `Session` = `providerId:sessionId[:12]`,
+   `Title`, `Turns` = `turns`, `Time` = relative (`now` / `Xm ago` / `Xh ago`) from `lastActiveAt`.
+3. Add **one** short next-step suggestion (`--all` / `--limit N` / `-s keyword`).
+
+Never paste the CLI's plain-text table into chat — its column alignment only holds in
+monospaced terminals; chat clients render CJK widths differently. Markdown tables move
+alignment to the renderer, so it is always correct. Never summarize or drop rows either.
 
 **Prohibited** (avoid repetition and fabrication):
 - Do not restate the session counts (the table and the `共 N 个` line already show them)
