@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from caf.cli import main
 from caf.i18n import set_lang
@@ -61,10 +62,20 @@ class CliTest(unittest.TestCase):
             "CAF_DSH_SESSIONS": str(Path(self.tmp) / "no-dsh"),  # isolate the real ~/.dsh
             "CAF_LANG": "en",
         }
+        # fork tests exercise write_ready / resume paths; mock CLI presence so the
+        # suite runs on CI without codex/claude installed
+        self._cli_patches = [
+            mock.patch("caf.adapters.codex._codex_bin", return_value="/usr/bin/codex"),
+            mock.patch("caf.adapters.claude.shutil.which", return_value="/usr/bin/claude"),
+        ]
+        for p in self._cli_patches:
+            p.start()
         self._old = {k: os.environ.get(k) for k in self.env}
         os.environ.update(self.env)
 
     def tearDown(self):
+        for p in self._cli_patches:
+            p.stop()
         for k, v in self._old.items():
             if v is None:
                 os.environ.pop(k, None)

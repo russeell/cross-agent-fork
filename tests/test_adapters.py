@@ -130,8 +130,12 @@ class CodexAdapterTest(unittest.TestCase):
             encoding="utf-8",
         )
         os.environ["CAF_CODEX_HOME"] = str(home)
+        # write() requires a codex binary; mock it so tests run without a local install
+        self._codex_bin = mock.patch("caf.adapters.codex._codex_bin", return_value="/usr/bin/codex")
+        self._codex_bin.start()
 
     def tearDown(self):
+        self._codex_bin.stop()
         os.environ.pop("CAF_CODEX_HOME", None)
         os.environ.pop("CAF_CC_PROJECTS", None)
         os.environ.pop("CAF_LANG", None)

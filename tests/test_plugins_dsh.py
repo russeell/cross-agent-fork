@@ -108,7 +108,10 @@ class DshPluginTest(unittest.TestCase):
 
     def test_write_one_frame_per_line(self):
         """DSH stores one zstd frame per JSON line; a single-frame log is rejected."""
-        import zstandard as zstd
+        try:
+            import zstandard as zstd
+        except ImportError:
+            self.skipTest("需要 zstandard 库（zstd CLI 无法逐帧检查）")
 
         adapter = DshAdapter()
         ir = SessionIR(
@@ -134,7 +137,10 @@ class DshPluginTest(unittest.TestCase):
     def test_read_single_frame_still_compatible(self):
         """Old single-frame logs (pre-frame-per-line dsh) must still decompress."""
         from caf.plugins.dsh import _zstd_compress_frames, _zstd_decompress
-        import zstandard as zstd
+        try:
+            import zstandard as zstd
+        except ImportError:
+            self.skipTest("需要 zstandard 库")
 
         raw = b'{"type":"session","version":0,"id":"session-x"}\n{"type":"turn/start","seq":1}\n'
         single = zstd.ZstdCompressor().compress(raw)
