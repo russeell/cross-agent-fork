@@ -13,6 +13,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install -e . ruff
+      - run: pip install -e . "ruff==0.15.12"  # pin: newer ruff enables extra rules by default
       - run: ruff check caf/ tests/
       - run: python -m unittest discover -s tests
