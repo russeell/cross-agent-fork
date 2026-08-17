@@ -29,12 +29,28 @@ class DshPluginTest(unittest.TestCase):
         set_lang("en")
         self.tmp = tempfile.mkdtemp()
         os.environ["CAF_DSH_SESSIONS"] = str(Path(self.tmp) / "sessions")
+        os.environ["DSH_HOME"] = str(Path(self.tmp) / "dsh-home")
+        (Path(os.environ["DSH_HOME"]) / "profiles" / "tui").mkdir(parents=True)
         os.environ["CAF_LANG"] = "en"
 
     def tearDown(self):
         os.environ.pop("CAF_DSH_SESSIONS", None)
+        os.environ.pop("DSH_HOME", None)
         os.environ.pop("CAF_LANG", None)
         shutil.rmtree(self.tmp)
+
+    def test_resume_web_only_without_tui_profile(self):
+        """web-only dsh installs (no tui profile) get a GUI resume hint, not a dead command."""
+        from caf.plugins.dsh import DshAdapter
+        tui_dir = Path(os.environ["DSH_HOME"]) / "profiles" / "tui"
+        tui_dir.rmdir()  # simulate a web-only install
+        adapter = DshAdapter()
+        cmd = adapter.resume_command("session-abc", "/tmp/fixture-proj")
+        self.assertIn("http://127.0.0.1:3080", cmd)
+        self.assertNotIn("--profile tui", cmd)
+        tui_dir.mkdir()  # restore: with a tui profile the CLI resume form is used
+        self.assertIn("dsh --profile tui --resume session-abc",
+                      adapter.resume_command("session-abc", "/tmp/fixture-proj"))
 
     def test_project_key(self):
         self.assertEqual(

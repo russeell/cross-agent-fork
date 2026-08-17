@@ -14,6 +14,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Optional
@@ -28,6 +29,10 @@ _SAFE = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-")
 
 def _root() -> Path:
     return Path(os.environ.get("CAF_DSH_SESSIONS", str(Path.home() / ".dsh" / "sessions")))
+
+
+def _dsh_home() -> Path:
+    return Path(os.environ.get("DSH_HOME", str(Path.home() / ".dsh")))
 
 
 def _zstd_available() -> bool:
@@ -262,7 +267,12 @@ class DshAdapter(Adapter):
 
     def resume_command(self, sid: str, project_dir: Optional[str]) -> str:
         prefix = f"cd {shlex.quote(project_dir)} && " if project_dir else ""
-        return f"{prefix}dsh --profile tui --resume {sid}"
+        if (_dsh_home() / "profiles" / "tui").is_dir():
+            return f"{prefix}dsh --profile tui --resume {sid}"
+        # web-only installs (the common dsh setup) have no tui profile: the session
+        # shows up in the GUI's session list, so point resume at the web app.
+        opener = "open" if sys.platform == "darwin" else "xdg-open"
+        return f"{opener} http://127.0.0.1:3080  # dsh web: 打开会话列表找到该会话继续（{sid[:8]}）"
 
     def undo_command(self, sid: str, project_dir: Optional[str]) -> str:
         cwd = project_dir or os.getcwd()
