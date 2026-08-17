@@ -4,7 +4,7 @@
 
 | Scenario | Command |
 |---|---|
-| Working in the current agent, want to switch | `caf fork --into <target>` (auto-detects the active session) |
+| Working in the current agent, want to switch | `caf fork --into <target>` (picks the most recent session in the current directory) |
 | Fork the most recent session | `caf fork cc:last --into codex` |
 | Fork a specific session | `caf fork codex:01J7 --into claude` |
 | Fork at an arbitrary turn | `caf fork cc:9f3a --at 12 --into codex` |
@@ -14,14 +14,14 @@
 ## Reading the output
 
 ```text
-Forked: cc:9f3a -> codex (1 user turn / 2 messages, original untouched)
-Written: codex 01J7... (official import)
+✓ Forked: cc:9f3a -> codex (whole session, original untouched)
+✓ Written: codex thread 01J7... (official import)
 
--> resume: codex resume 01J7...
-Undo: codex delete 01J7...
+→ resume: codex resume 01J7...     [-c copy]
 ```
 
 The `→ 继续:` line is the user's next command. Show it first, ask for confirmation, then run it.
+An `Undo:` line appears only when the target supports undo (claude / dsh); codex has none.
 
 ## Failure handling
 

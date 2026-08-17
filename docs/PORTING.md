@@ -4,9 +4,10 @@
 
 ## 0. 两种加入方式
 
-- **核心 adapter**（`caf/adapters/`）：随主包分发，须保持零运行时依赖
-- **社区插件**（`caf/plugins/`）：独立目录，一个模块导出一个 `Adapter` 子类即被自动发现；
-  可以有自己的可选依赖（如 DSH 插件的 zstandard），缺失时 `detect()` 返回 False，doctor 给出安装提示
+- **核心 adapter**（`caf/adapters/`）：随主包分发
+- **社区插件**（`caf/plugins/`）：独立目录，一个模块导出一个 `Adapter` 子类即被自动发现（零注册代码，插件失败不影响核心）
+
+**依赖约束**：zstandard 是唯一正式依赖（v0.2 起，DSH 读写所需）。新增 adapter 不得引入新运行时依赖；确实需要时先讨论（保持安装永远一行命令）。
 
 ## 1. 写侧策略（先决定，再动手）
 
@@ -29,10 +30,18 @@
 
 ```python
 class Adapter:
-    agent_id: str                       # "cc" / "codex" / "opencode" ...
-    def detect(self) -> bool
-    def store_version(self) -> str
+    agent_id: str                       # "cc" / "codex" / "dsh"（会话引用前缀）
+    display_name: str                   # 展示名，如 claude / deepseek-harness
+    install_hint: str                   # 未安装时 doctor 给出的安装提示
+    def detect(self) -> bool            # 是否安装（默认 read_ready = detect）
+    def read_ready(self) -> bool        # 读侧可用 → fork 源候选（如 store 目录存在）
+    def write_ready(self) -> bool       # 写侧可用 → fork 目标候选（如 CLI 可执行）
+    def matches(self, name) -> bool     # agent_id / display_name 统一别名匹配
+    def store_path(self) -> str         # doctor 展示的实际存储路径
+    def store_version(self) -> str      # 版本；未知返回 ""（不伪造）
     def scan_sessions(self) -> list[SessionMeta]
+    def scan_cached(self) -> list[SessionMeta]  # 记忆化扫描：每命令每 adapter 只扫一次
+    def invalidate(self) -> None        # 写成功后失效扫描缓存（写后读可见）
     def load_session(self, sid) -> IR   # 整会话（文本轮次 + 工具摘要）
     def project_dir(self, sid) -> str | None
     def resume_command(self, sid, project_dir) -> str

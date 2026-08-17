@@ -20,7 +20,7 @@ description: Cross-agent session fork — use when the user wants to switch agen
 ### fork (core)
 
 ```bash
-caf fork --into <target>          # auto-detect the current session, zero args
+caf fork --into <target>          # picks the most recent session in the current directory
 caf fork cc:last --into codex     # explicit source
 caf fork <agent>:<id> --into cc   # specific session
 caf fork cc:9f3a --at 12 --into codex  # fork at turn 12 (arbitrary boundary)

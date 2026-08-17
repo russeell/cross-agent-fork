@@ -10,7 +10,7 @@
 
 **一句话定位**：caf = agent 内置 fork 的跨 agent 版——**整会话 + cwd + 可恢复的线程身份**，在主流 agent 集合内任意互通，其余都不管。
 
-**现状（v0.2）**：T1 三 agent 六向互通全部打通并真机验证（CC→Codex 走官方导入 API，DSH 为第一个社区插件）；`--at` 任意边界、`caf tree` 谱系、`caf mcp` 桌面入口、双语输出已交付。
+**现状（v0.2）**：T1 三 agent 六向互通全部打通并真机验证（CC→Codex 走官方导入 API，DSH 为第一个社区插件）；`--at` 任意边界、`caf tree` 谱系、`caf mcp` 桌面入口、双语输出、`caf install-skill`（skill 随 wheel 打包）已交付。
 
 **范围**：只做主流/热门 agent；长尾（Kiro、ClawdBot、Vibe 等）不做——需求小、维护税高（casr 支持 17 个 provider 仅 104⭐ 即是证据）。
 
@@ -31,8 +31,8 @@ codex-plugin-cc 已覆盖「CC→Codex 整会话」（官方导入）。caf 的�
 ## 2. 设计原则
 
 1. **复用优先**：有官方 API 用官方（CC→Codex import），没有才自己写信封
-2. **简洁**：一个核心动作（fork）+ 两个支撑命令（list/doctor），零运行时依赖
-3. **信封翻译**：唯一的手写格式翻译 = Codex→CC 写侧（整会话文本 + 工具摘要行）
+2. **简洁**：一个核心动作（fork）+ 少量支撑命令（list/doctor），一个正式依赖（zstandard）
+3. **信封翻译**：每个写侧 adapter 的信封翻译保持薄而局部（CC / DSH 各一套，~250 行）
 4. **实用**：每个功能对应真实场景（限流切换、换思路、双 agent 工作流）
 5. **便捷**：零配置、确定性源选择（当前目录优先）、交互兜底、输出以「一条可粘贴命令」结尾
 
@@ -49,7 +49,7 @@ cc:last             # 该 agent 最近会话（当前项目）
 
 - fork **整个会话**（同 `codex fork` 语义：整会话克隆到新线）
 - 源会话**只读**、永不动
-- 产物 = 目标 agent 原生可恢复的会话（codex thread / cc jsonl）
+- 产物 = 目标 agent 原生可恢复的会话（codex thread / cc jsonl / dsh session）
 
 ### 3.3 fork 内容清单
 
@@ -61,11 +61,11 @@ cc:last             # 该 agent 最近会话（当前项目）
 
 理由：与 codex-plugin-cc 一致（它也是 `plugins: []` 全空）；文件系统共享，目标可自读自跑；授权重置是各 agent 的安全设计。
 
-## 4. 命令规范（v0.2 = fork / list / doctor / tree / mcp）
+## 4. 命令规范（v0.2 = fork / list / doctor / tree / mcp / install-skill）
 
 **语言契约**：所有用户可见输出中英双语，`--lang <en|zh>` > `CAF_LANG` > 系统语言；skill 调用时按用户输入语言传 `--lang`。
 
-**输出契约**：`--json` 为机器口；引导行（`-> fork the most recent` 等）只在 TTY 出现，agent/管道/聊天客户端只拿数据；列对齐（id 列 20 宽 + 标题列 36 CJK 感知 + 轮数右对齐）；每个命令输出末尾带「下一步」建议，错误带 `-> try:` 提示。
+**输出契约**：`--json` 为机器口；引导行（`-> fork the most recent` 等）只在 TTY 出现，agent/管道/聊天客户端只拿数据；列对齐（id 列 18 宽 + 标题列 28 CJK 感知 + 轮数右对齐），**无行序号**（行首 `1.` 会被聊天客户端渲染成 Markdown 有序列表，标识符本身在最左，gh/kubectl 风格）；聊天场景由 skill 用 `--json` 渲染 Markdown 表格（对齐交给渲染器）；每个命令输出末尾带「下一步」建议，错误带 `-> try:` 提示。
 
 ### 4.1 `caf fork`（核心）
 
@@ -89,18 +89,19 @@ caf fork [ref] [--at N] [--through|--before] [--into <agent>] [--dry-run] [-c/--
 ✓ 分叉: cc:9f3a → codex（整会话，原会话不动）
 ✓ 写入: codex thread 01J7...（官方导入）
 → 继续: codex resume 01J7...     [-c 复制]
-撤销: codex delete 01J7...
 ```
+
+（`撤销:` 提示只在目标支持 `undo_command` 时出现——claude / dsh 目标有，codex 无。）
 
 **交互模式**（无参数时）：
 
 ```text
 $ caf fork
-✓ 发现: Claude Code v2.1.187（12 个会话）+ Codex v0.148.0（9 个会话）
+✓ 发现: claude（12 个会话）+ codex（9 个会话）+ deepseek-harness（3 个会话）
   1. cc:9f3a  OAuth 重构        24 轮  2h ago   ← 当前项目
   2. cc:b7c2  OAuth 重构 (1)    12 轮  1h ago
 > 源会话 [1]:
-> 目标 agent: [codex]
+> 目标 agent: 1. codex  2. dsh  3. ...
   将 fork cc:9f3a 整会话 → codex（原会话不动）
   [回车确认 / q 取消]
 ```
@@ -119,7 +120,7 @@ caf list [--agent <agent>] [--all] [--json]
 ```
 
 - 稳定输出契约（gh 模式）：**纯按最近活动排序**（当前项目只标记 `←` 不改序）；默认显示 20 条，`--limit N` / `--all` 显式控制，`-s <关键词>` 标题搜索（cc-switch PRD：搜索是找回会话的主路径）；尾部固定格式提示总数与扩展方式；`--json` 提供完整数据
-- 列：agent 前缀、短 id、标题、轮数、时间
+- 列：agent 前缀 + 短 id、标题、轮数、时间（无行序号，行首直接是会话 id）
 - 失败隔离：单 agent 存储损坏不影响整体
 - 纯文本行，可管道 `caf list | fzf`；`--json` 输出 SessionMeta（§6.1）
 
@@ -127,7 +128,16 @@ caf list [--agent <agent>] [--all] [--json]
 
 健康检查：各 agent 安装状态、存储路径（含桌面 thread history）、版本、read/write 三档状态（ok / planned / off）、修复建议；**只检查本地能力，无联网请求**。fork 失败时跑 `caf doctor` 自诊断。
 
-### 4.4 用户使用方案
+### 4.4 `caf install-skill`
+
+```
+caf install-skill [codex|claude]
+```
+
+- 把随 wheel 打包的 skill（`caf/skills/caf/`，package-data 随包分发）复制到目标 agent 的 skills 目录：codex → `~/.agents/skills/caf`，claude → `~/.claude/skills/caf`；**幂等可重装**
+- 默认 codex；这是「对话即入口」的唯一安装路径，用户不需要手动复制文件
+
+### 4.5 用户使用方案
 
 三条路径对应三种用户状态：
 
@@ -144,11 +154,11 @@ caf list [--agent <agent>] [--all] [--json]
 | 层 | 后端 | 覆盖 | 成本 |
 |---|---|---|---|
 | L1 | 官方 API（external-agent import，同 `/import`、codex-plugin-cc 机制） | CC → Codex | 零翻译，官方维护 |
-| L2 | 内置信封（自研 adapter） | claude、codex（v0.1）；opencode、gemini（v0.2）；cursor（v0.3） | 每目标 ~350 行 + 版本维护税 |
+| L2 | 内置信封（自研 adapter） | claude、dsh（v0.2 已交付）；opencode、gemini、cursor（候选） | 每目标 ~250 行 + 版本维护税 |
 
 路由：按（源, 目标）匹配——L1 优先，其余 L2；`caf doctor` 显示每个 agent 的转换后端状态。
 
-原则：核心零依赖；官方 API 不可用 → 明确报错并提示（升级/登录/`caf doctor`）。casr 桥接**不承诺**（长尾需求小，社区明确需要时再评估）。
+原则：一个正式依赖（zstandard）；官方 API 不可用 → 明确报错并提示（升级/登录/`caf doctor`）。casr 桥接**不承诺**（长尾需求小，社区明确需要时再评估）。
 
 ### 5.1 Agent 支持矩阵
 
@@ -222,7 +232,7 @@ class Adapter:
 
 1. 官方导入 API：CC JSONL → import → `codex exec resume <id> "…"` 可恢复
 2. CC 写侧：手工构造最小 CC JSONL（queue-operation + parentUuid 链）→ `claude --resume <uuid> -p "…"` 可恢复
-3. 实测各客户端「当前会话 id 的获取方式」：前台进程探测 + 最近修改会话文件兜底（iterm-agent-fork 模式）
+3. 实测无 ref 时的确定性源选择：当前目录最新非空会话 → 全局最新（不依赖进程探测）
 4. 样本脱敏 commit 为 `tests/fixtures/`
 
 ## 10. v0.2 候选
@@ -233,7 +243,6 @@ class Adapter:
 - ~~DeepSeek Harness 插件~~ —— 已实现（v0.2）：首个社区插件（zstd JSONL）
 - ~~双语输出~~ —— 已实现（v0.2）：`--lang` / `CAF_LANG` / 系统语言跟随
 - ~~命令级扫描缓存~~ —— 已实现（v0.2）：`scan_cached`，每命令每 adapter 只扫一次
-- skills 插件打包（marketplace 分发）
 - 写侧扩展：opencode / gemini（需实机验证；opencode 存储为版本化 sqlite，写侧走官方 API）
 - `--worktree`
 
@@ -243,18 +252,18 @@ class Adapter:
 - **读侧扩展：T2 五家**（Grok / Cline / Aider / Kimi / Copilot 的 list/doctor 可见，参考 casr discovery 思路）
 - casr 桥接：不承诺，列为未来备选（长尾需求小，社区明确需要时再评估）
 
-## 11. 仓库结构（实测 v0.2，核心 ~2150 行，零运行时依赖）
+## 11. 仓库结构（实测 v0.2，核心 ~2150 行，一个正式依赖）
 
 ```
 cross-agent-fork/
 ├── README.md                     # 英文门面：定位、快速开始、使用路径
 ├── README.zh-CN.md               # 中文版（顶部语言切换）
 ├── LICENSE                       # MIT
-├── pyproject.toml                # 零运行时依赖（纯 stdlib）
+├── pyproject.toml                # 一个正式依赖（zstandard）
 ├── caf/
 │   ├── __init__.py               # 版本号（~3 行）
 │   ├── __main__.py               # python -m caf 入口（~4 行）
-│   ├── cli.py                    # fork/list/doctor/tree/mcp 命令 + 交互 + 输出契约（~585 行）
+│   ├── cli.py                    # fork/list/doctor/tree/mcp/install-skill + 交互 + 输出契约（~640 行）
 │   ├── core.py                   # 整会话 IR + 会话探测 + 引用解析 + 工具函数（~240 行）
 │   ├── tree.py                   # 谱系构建 + 渲染（~65 行）
 │   ├── skills/caf/               # 随 wheel 打包的 skill（SKILL.md + references，零代码）
@@ -268,21 +277,21 @@ cross-agent-fork/
 ├── caf/plugins/
 │   └── dsh.py                    # DeepSeek Harness 社区插件（zstd JSONL，~310 行）
 ├── specs/2026-08-16-cross-agent-fork-design.md
-├── docs/                         # VISION.md（愿景）+ PORTING.md（扩展指南）
+├── docs/                         # VISION.md（愿景）+ PORTING.md（扩展指南）+ install.md（agent 安装指南）
 └── tests/
     ├── fixtures/                 # 脱敏样本 + fake_codex RPC 模拟器
     ├── test_cli.py / test_core.py / test_adapters.py / test_plugins_dsh.py / test_tree_mcp.py
     └── acceptance/marker_test.sh
 ```
 
-实测：核心 ~2150 行（含 DSH 插件）、测试 ~800 行、60 个测试全绿；`skills/` 是 markdown，不计入代码量。主要超出项：codex 官方导入 JSON-RPC 客户端与 MCP server（设计时未预算，已拆出 `_rpc.py`/`mcp.py` 独立模块）。
+实测：核心 ~2150 行（含 DSH 插件）、测试 ~800 行、76 个测试全绿；`skills/` 是 markdown，不计入代码量。主要超出项：codex 官方导入 JSON-RPC 客户端与 MCP server（设计时未预算，已拆出 `_rpc.py`/`mcp.py` 独立模块）。
 
 ## 12. 使用表面
 
 | 表面 | 形态 | 版本 |
 |---|---|---|
-| 终端 | CLI 本身（fork/list/doctor/tree） | v0.1 |
-| Skills | per-agent SKILL.md，agent 隐式触发「对话即入口」 | v0.1（零代码） |
+| 终端 | CLI 本身（fork/list/doctor/tree/install-skill） | v0.1+ |
+| Skills | `caf install-skill` 装进 agent，「对话即入口」 | v0.2 ✅ |
 | MCP | `caf mcp`（legacy 协议），MCP 客户端调用 | v0.2 ✅ |
 
 Skills 工作流（§12.1 详见）：
@@ -292,7 +301,7 @@ Skills 工作流（§12.1 详见）：
 3. 用户问「有哪些会话」→ `caf list`
 4. fork 失败 → `caf doctor`
 
-分发：skill 随 wheel 打包（`caf/skills/caf/`），`caf install-skill codex|claude` 一条命令装进 agent（Codex：`~/.agents/skills/caf`；Claude：`~/.claude/skills/caf`）；marketplace 打包留作候选。
+分发：skill 随 wheel 打包（`caf/skills/caf/`），`caf install-skill codex|claude` 一条命令装进 agent（Codex：`~/.agents/skills/caf`；Claude：`~/.claude/skills/caf`）；README 的安装入口是「粘贴提示词 → agent 读取 docs/install.md 自行安装」（Agent-Reach 模式）。
 
 ## 13. 参考与借鉴
 
@@ -302,6 +311,7 @@ Skills 工作流（§12.1 详见）：
 | Provider trait × 17 providers、原子写、读回校验 | [casr](https://github.com/Dicklesworthstone/cross_agent_session_resumer) |
 | 覆盖保护、smoke 验收 | [opal-bridge](https://github.com/1va7/opal-bridge) |
 | SessionMeta、失败隔离、resume 带 cwd | [cc-switch session-manager](https://github.com/farion1231/cc-switch/blob/main/session-manager.md) |
-| 零依赖、内容与传输分离、14 harness 分发 | [superpowers](https://github.com/obra/superpowers) |
+| 内容与传输分离、14 harness 分发 | [superpowers](https://github.com/obra/superpowers) |
+| agent 读取安装文档自行安装 | [agent-reach](https://github.com/Panniantong/Agent-Reach) |
 | doctor 健康检查 | [agent-reach](https://github.com/Panniantong/agent-reach) |
 | SKILL.md 结构、隐式触发、渐进披露 | [anthropics/skills](https://github.com/anthropics/skills)、[Codex skills 文档](https://developers.openai.com/codex/skills) |
