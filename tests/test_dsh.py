@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 from caf.adapters import discover_adapters
-from caf.core import CafError, SessionIR, SessionMeta, ToolEvidence, Turn
+from caf.core import CafError, ForkSnapshot, SessionMeta, Turn
 from caf.adapters.dsh import DshAdapter, _argument_text, _project_key
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -54,7 +54,7 @@ class DshAdapterTest(unittest.TestCase):
     def test_tool_arguments_dict_is_json(self):
         self.assertEqual(_argument_text({"path": "src/b.py"}), '{"path": "src/b.py"}')
 
-    def test_discovery_includes_plugin(self):
+    def test_discovery_includes_adapter(self):
         names = {a.agent_id for a in discover_adapters()}
         self.assertIn("dsh", names)
 
@@ -81,19 +81,21 @@ class DshAdapterTest(unittest.TestCase):
         self.assertEqual(len(ir.turns), 2)
         self.assertEqual(ir.turns[0].role, "user")
         self.assertIn("PKCE", ir.turns[0].text)
-        self.assertEqual(ir.turns[1].tools[0].name, "Read")
-        self.assertIn("src/auth.py", ir.turns[1].tools[0].arguments)
-        self.assertEqual(ir.turns[1].tools[0].result, "...")
+        self.assertIn("[tool] Read", ir.turns[1].text)
+        self.assertIn("src/auth.py", ir.turns[1].text)
+        self.assertIn("[tool result] Read · ok", ir.turns[1].text)
+        self.assertIn("...", ir.turns[1].text)
+        self.assertEqual(ir.unfinished_turns, set())
 
     def test_write_roundtrip(self):
         adapter = DshAdapter()
         project = Path(self.tmp) / "中文项目"
         project.mkdir(parents=True, exist_ok=True)
-        ir = SessionIR(
+        ir = ForkSnapshot(
             SessionMeta("cc", "9f3a12", title="OAuth 重构", project_dir=str(project)),
             [
                 Turn("user", "把 OAuth 回调改成 PKCE 流程"),
-                Turn("assistant", "完成", [ToolEvidence("edit_file", status="ok")]),
+                Turn("assistant", "完成\n[tool] edit_file"),
             ],
         )
         sid = adapter.write(ir)
@@ -107,7 +109,7 @@ class DshAdapterTest(unittest.TestCase):
 
         reloaded = adapter.load_session(sid)
         self.assertEqual(len(reloaded.turns), 2)
-        self.assertIn("[tool] edit_file · ok", reloaded.turns[1].text)
+        self.assertIn("[tool] edit_file", reloaded.turns[1].text)
         cmd = adapter.resume_command(sid, str(project))
         self.assertIn(f"dsh --profile tui --resume {sid}", cmd)
 
@@ -117,17 +119,17 @@ class DshAdapterTest(unittest.TestCase):
 
     def test_write_rejects_unknown_cwd(self):
         with self.assertRaises(CafError):
-            DshAdapter().write(SessionIR(SessionMeta("cc", "src"), []))
+            DshAdapter().write(ForkSnapshot(SessionMeta("cc", "src"), []))
 
     def test_write_one_frame_per_line(self):
         """DSH stores one zstd frame per JSON line; a single-frame log is rejected."""
         try:
             import zstandard as zstd
         except ImportError:
-            self.skipTest("需要 zstandard 库（zstd CLI 无法逐帧检查）")
+            self.skipTest("zstandard is required for frame-level checks")
 
         adapter = DshAdapter()
-        ir = SessionIR(
+        ir = ForkSnapshot(
             SessionMeta("cc", "9f3a12", project_dir="/tmp/fixture-proj"),
             [Turn("user", "u1"), Turn("assistant", "a1")],
         )
@@ -172,7 +174,7 @@ class DshAdapterTest(unittest.TestCase):
         try:
             import zstandard as zstd
         except ImportError:
-            self.skipTest("需要 zstandard 库")
+            self.skipTest("zstandard is required")
 
         raw = b'{"type":"session","version":0,"id":"session-x"}\n{"type":"turn/start","seq":1}\n'
         single = zstd.ZstdCompressor().compress(raw)
@@ -184,7 +186,7 @@ class DshAdapterTest(unittest.TestCase):
         from caf.adapters.dsh import _zstd_decompress
 
         adapter = DshAdapter()
-        ir = SessionIR(
+        ir = ForkSnapshot(
             SessionMeta("cc", "9f3a12", project_dir="/tmp/fixture-proj"),
             [
                 Turn("user", "u1"),

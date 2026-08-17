@@ -20,19 +20,9 @@ class CafError(Exception):
 
 
 @dataclass
-class ToolEvidence:
-    name: str
-    status: str = "unknown"  # "unknown" | "ok" | "error" — never guessed, only observed
-    call_id: str = ""
-    arguments: str = ""  # raw arguments (JSON string or text), truncated on render
-    result: str = ""  # tool output text, truncated on render
-
-
-@dataclass
 class Turn:
     role: str  # "user" | "assistant"
     text: str
-    tools: list[ToolEvidence] = field(default_factory=list)
 
 
 @dataclass
@@ -47,12 +37,13 @@ class SessionMeta:
 
 
 @dataclass
-class SessionIR:
+class ForkSnapshot:
     """Minimal portable fork snapshot, not a universal session schema."""
 
     session: SessionMeta
     turns: list[Turn]
-    modified: bool = False  # turns were sliced/injected -> writers must render IR, not the source file
+    modified: bool = False  # sliced/injected snapshots must be rendered, not copied
+    unfinished_turns: set[int] = field(default_factory=set)
 
 
 # ---------------------------------------------------------------- utilities
@@ -120,11 +111,20 @@ def pick_recent_session(adapters, project_dir: str | None = None) -> SessionMeta
     return best
 
 
-def slice_turns(turns: list[Turn], at: int) -> tuple[list[Turn], str | None]:
-    """Slice IR turns by user-message sequence: include user N and everything up to the next user.
+def slice_turns(
+    turns: list[Turn], at: int, unfinished_turns: set[int] | None = None
+) -> tuple[list[Turn], str | None]:
+    """Slice a snapshot by user-message sequence: include user N through its reply.
     A requested turn without an assistant reply fails instead of moving the boundary."""
     if at < 1:
         raise CafError(f"Invalid fork point: --at {at}", hint="--at must be >= 1")
+    if unfinished_turns and at in unfinished_turns:
+        hint = (
+            f"Use --at {at - 1}, or fork the whole current session (no --at)."
+            if at > 1
+            else "Fork the whole current session (no --at), or choose a completed turn."
+        )
+        raise CafError(f"Turn {at} is unfinished.", hint=hint)
 
     idx_user: int | None = None
     user_count = 0
@@ -158,14 +158,25 @@ def slice_turns(turns: list[Turn], at: int) -> tuple[list[Turn], str | None]:
     return turns[: end + 1], None
 
 
-def with_tool_lines(text: str, tools: list[ToolEvidence]) -> str:
-    """Render tool evidence into a turn's text: one summary line per tool, plus the
-    arguments and result the next agent needs to understand what happened."""
-    for tool in tools:
-        line = f"[tool] {tool.name} · {tool.status}"
-        text = f"{text}\n{line}" if text else line
-        if tool.arguments:
-            text += f"\n  args: {tool.arguments[:500]}"
-        if tool.result:
-            text += f"\n[tool-result] {tool.result[:2000]}"
+def append_evidence(text: str, block: str) -> str:
+    """Append already-portable evidence to a turn without introducing a tool schema."""
+    if not block:
+        return text
+    return f"{text}\n{block}" if text else block
+
+
+def tool_call_text(name: str, arguments: str = "") -> str:
+    """Portable text for an observed tool call; no status is invented."""
+    text = f"[tool] {name}"
+    if arguments:
+        text += f"\nargs: {arguments}"
+    return text
+
+
+def tool_result_text(name: str, output: str, is_error: bool) -> str:
+    """Portable text for an observed tool result."""
+    status = "error" if is_error else "ok"
+    text = f"[tool result] {name} · {status}"
+    if output:
+        text += f"\n{output}"
     return text

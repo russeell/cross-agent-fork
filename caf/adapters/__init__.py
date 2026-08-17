@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from caf.core import CafError, SessionIR, SessionMeta
+from caf.core import CafError, ForkSnapshot, SessionMeta
 
 
 class Adapter:
@@ -41,13 +41,13 @@ class Adapter:
             self._caf_scan_cache = self.scan_sessions()
         return self._caf_scan_cache
 
-    def load_session(self, sid: str) -> SessionIR:
+    def load_session(self, sid: str) -> ForkSnapshot:
         raise NotImplementedError
 
     def resume_command(self, sid: str, project_dir: str | None) -> str:
         raise NotImplementedError
 
-    def write(self, ir: SessionIR) -> str:
+    def write(self, snapshot: ForkSnapshot) -> str:
         """Write side: official API or file-level envelope; returns the new session id."""
         raise NotImplementedError
 

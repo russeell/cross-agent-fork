@@ -4,20 +4,21 @@
 
 > Bring native agent fork across agent boundaries.
 
-`caf` brings an agent's native fork workflow across agent boundaries. It creates a
-new native session in another agent from the source session's conversation, working
-directory, and essential tool evidence. The original stays untouched.
+Coding agents can fork sessions, but only into themselves. `caf` brings that primitive
+across agent boundaries: the target gets a new native resumable session built from the
+source conversation, working directory, and portable tool evidence. The source stays
+untouched.
 
 Currently supports Claude Code, Codex, and DeepSeek Harness.
 Tested on macOS / Linux.
 
 ```bash
-caf fork cc:last --into codex
+caf fork --into codex
 ```
 
 ```text
-✓ cc:9f3a → codex
-→ codex resume 019...
+✓ forked  cc:9f3a → codex:019...
+  resume  codex resume 019...
 ```
 
 ## Install
@@ -26,13 +27,18 @@ caf fork cc:last --into codex
 pipx install git+https://github.com/russeell/cross-agent-fork.git
 ```
 
-To use caf inside an agent (Codex / Claude Code), install the skill too:
+The optional agent skill lives in [`caf/skills/caf/`](caf/skills/caf/). CAF ships the
+integration asset but does not manage skill installation. You can ask your agent:
 
-```bash
-caf install-skill          # codex (default); or: caf install-skill claude
+```text
+Install the caf skill from
+https://github.com/russeell/cross-agent-fork/tree/main/caf/skills/caf
+using your normal skill installation workflow, then verify that it is available.
 ```
 
-Then just say "fork this session into Codex" in that agent.
+Then say “fork this session into Codex.” The skill passes `<current-agent>:last`, avoiding
+CAF's broader cross-agent source heuristic. Use an explicit session ID when exact identity
+is available.
 
 ## Quick start
 
@@ -52,17 +58,16 @@ The real flow looks like this — you are mid-task in Claude Code and need Codex
 
 ```text
 $ caf fork --into codex
-✓ cc:9f3a... → codex:019abc...
-  source unchanged (24 user turns / 110 messages)
-→ codex resume 019abc...
+✓ forked  cc:9f3a... → codex:019abc...
+  resume  codex resume 019abc...
 
 $ codex resume 019abc...
 > Continue where we left off.
 ```
 
-Codex picks up the task — it knows the goal, the files you touched, and what was left
-open, without you re-explaining anything. Verified both ways: Claude Code → Codex and
-Codex → Claude Code (and into DeepSeek Harness).
+The target receives the portable conversation evidence needed to continue the fork.
+What survives is explicit below; CAF does not claim to migrate agent configuration or
+hidden runtime state.
 
 ## Supported agents
 
@@ -89,11 +94,6 @@ wrong:
 caf fork cc:last --at 12 --into codex
 ```
 
-## Extras
-
-- **Agent integration (skills)** — `caf install-skill codex` (or `claude`) installs the
-  bundled skill; then just say "fork this session into Codex" in that agent.
-
 ## How it works
 
 The session's text turns and essential tool evidence are replayed into the target
@@ -112,14 +112,13 @@ each fork creates a new native target session and leaves the source untouched.
 | DeepSeek Harness → Claude Code | ✅ |
 | DeepSeek Harness → Codex | ✅ |
 
-Verified by forking a real mid-task session and resuming in the target agent without
-re-explaining the task. Session formats change; these dates are the honest signal:
-2026-08-17.
+Verified with real source sessions, native target resume, cwd checks, and continuation
+markers. Session formats change; the last live verification was 2026-08-17.
 
 ## Limitations
 
-- Text turns and tool evidence are carried; config, permissions, attachments, and git
-  state are not migrated.
+- Text turns and portable tool evidence are carried. Config, permissions, attachments,
+  hidden agent state, and git state are not.
 
 ## Contributing / adding an agent
 

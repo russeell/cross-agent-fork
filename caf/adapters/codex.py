@@ -17,12 +17,14 @@ from caf import __version__
 from caf.adapters import Adapter
 from caf.core import (
     CafError,
-    SessionIR,
+    ForkSnapshot,
     SessionMeta,
-    ToolEvidence,
     Turn,
+    append_evidence,
     atomic_write,
     read_jsonl,
+    tool_call_text,
+    tool_result_text,
 )
 
 
@@ -46,6 +48,7 @@ _INJECTED_PREFIXES = (
     "<recommended_plugins>",
     "<filesystem",
     "<permission_profile",
+    "<turn_aborted>",
 )
 
 
@@ -87,7 +90,7 @@ def _is_cc_source(path: str) -> bool:
         return False
 
 
-def _bridge_cc_mirror(ir: SessionIR) -> str:
+def _bridge_cc_mirror(snapshot: ForkSnapshot) -> str:
     """Non-CC source -> render a CC mirror under projects/__caf_bridge__ (for the official importer, deleted after use)."""
     from caf.adapters.claude import cc_projects_dir, render_cc_lines
 
@@ -95,7 +98,7 @@ def _bridge_cc_mirror(ir: SessionIR) -> str:
     bridge_dir.mkdir(parents=True, exist_ok=True)
     sid = str(uuid4())
     path = bridge_dir / f"{sid}.jsonl"
-    atomic_write(path, "\n".join(render_cc_lines(ir, sid)) + "\n")
+    atomic_write(path, "\n".join(render_cc_lines(snapshot, sid)) + "\n")
     return str(path)
 
 
@@ -378,26 +381,46 @@ class CodexAdapter(Adapter):
         out.sort(key=lambda m: m.last_active_at, reverse=True)
         return out
 
-    def load_session(self, sid: str) -> SessionIR:
+    def load_session(self, sid: str) -> ForkSnapshot:
         meta = self.find_session(sid)
         if not meta:
             raise CafError(f"Codex session not found: {sid}", hint="caf list --all")
         turns: list[Turn] = []
+        pending: dict[str, tuple[int, str]] = {}
+        user_turn = 0
+        active_task: str | None = None
+        task_turns: dict[str, int] = {}
+        unfinished: set[int] = set()
         for f in self._files_for_session(meta.session_id):
             for ev in read_jsonl(f):
+                payload = ev.get("payload") or {}
+                if ev.get("type") == "event_msg":
+                    event_type = payload.get("type")
+                    if event_type == "task_started":
+                        active_task = str(payload.get("turn_id", "")) or None
+                    elif event_type in ("task_complete", "turn_aborted"):
+                        task_id = str(payload.get("turn_id", ""))
+                        ordinal = task_turns.get(task_id)
+                        if event_type == "turn_aborted" and ordinal:
+                            unfinished.add(ordinal)
+                        if task_id == active_task:
+                            active_task = None
                 msg = _iter_messages(ev)
                 if msg:
                     role, text = msg
+                    if role == "user":
+                        user_turn += 1
+                        if active_task:
+                            task_turns[active_task] = user_turn
                     if (
                         role == "assistant"
                         and turns
                         and turns[-1].role == "assistant"
-                        and not turns[-1].text
-                        and turns[-1].tools
+                        and any(idx == len(turns) - 1 for idx, _ in pending.values())
                     ):
                         # Some Codex rollouts emit function_call before the textual
                         # assistant item. Keep both in the same portable turn.
-                        turns[-1].text = text
+                        turns[-1].text = append_evidence(turns[-1].text, text)
                     else:
                         turns.append(Turn(role, text))
                     continue
@@ -408,20 +431,27 @@ class CodexAdapter(Adapter):
                 if kind == "call":
                     if not turns or turns[-1].role != "assistant":
                         turns.append(Turn("assistant", ""))
-                    turns[-1].tools.append(
-                        ToolEvidence(
-                            name=data["name"],
-                            call_id=data["call_id"],
-                            arguments=data["arguments"],
-                        )
+                    turns[-1].text = append_evidence(
+                        turns[-1].text,
+                        tool_call_text(data["name"], data["arguments"]),
                     )
-                elif turns and turns[-1].role == "assistant":
-                    for existing in reversed(turns[-1].tools):
-                        if existing.call_id == data["call_id"]:
-                            existing.result = data["output"]
-                            existing.status = "error" if data["is_error"] else "ok"
-                            break
-        return SessionIR(meta, turns)
+                    if data["call_id"]:
+                        pending[data["call_id"]] = (len(turns) - 1, data["name"])
+                else:
+                    match = pending.get(data["call_id"])
+                    if not match:
+                        if not turns or turns[-1].role != "assistant":
+                            turns.append(Turn("assistant", ""))
+                        idx, name = len(turns) - 1, "tool"
+                    else:
+                        idx, name = match
+                    turns[idx].text = append_evidence(
+                        turns[idx].text,
+                        tool_result_text(name, data["output"], data["is_error"]),
+                    )
+        if active_task and active_task in task_turns:
+            unfinished.add(task_turns[active_task])
+        return ForkSnapshot(meta, turns, unfinished_turns=unfinished)
 
     def _files_for_session(self, sid: str) -> list[Path]:
         """All rollout files for a session id (paged threads merged in path order)."""
@@ -435,21 +465,21 @@ class CodexAdapter(Adapter):
         prefix = f"cd {shlex.quote(project_dir)} && " if project_dir else ""
         return f"{prefix}codex resume {sid}"
 
-    def write(self, ir: SessionIR) -> str:
+    def write(self, snapshot: ForkSnapshot) -> str:
         """Official import: externalAgentConfig/import (same mechanism as codex-plugin-cc)."""
         if not _codex_bin():
             raise CafError("codex CLI not found", hint="npm install -g @openai/codex")
-        source = ir.session.source_path
+        source = snapshot.session.source_path
         mirror: Optional[str] = None
-        if ir.modified or not (
+        if snapshot.modified or not (
             source and Path(source).is_file() and _is_cc_source(source)
         ):
             # IR was sliced/injected, or the source is not CC -> render a CC mirror
             # -> official import (deleted after use)
-            mirror = _bridge_cc_mirror(ir)
+            mirror = _bridge_cc_mirror(snapshot)
             source = mirror
         try:
-            cwd = ir.session.project_dir
+            cwd = snapshot.session.project_dir
             if not cwd or not os.path.isdir(cwd):
                 raise CafError(
                     "Cannot fork: source working directory is unknown or does not exist."

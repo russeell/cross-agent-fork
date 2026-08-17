@@ -49,7 +49,7 @@ for line in sys.stdin:
             continue
         send({"jsonrpc": "2.0", "id": req["id"], "result": {"importId": "i1"}})
         if MODE == "timeout":
-            time.sleep(5)  # 不发 completed，等客户端超时
+            time.sleep(5)  # Never send completed; let the client time out.
             break
         send(
             {

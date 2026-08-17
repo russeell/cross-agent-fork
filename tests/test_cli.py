@@ -1,4 +1,4 @@
-"""CLI smoke tests: list / fork / doctor / install-skill (fixtures + env isolation)."""
+"""CLI smoke tests: list / fork / doctor (fixtures + env isolation)."""
 
 import contextlib
 import io
@@ -71,7 +71,7 @@ class CliTest(unittest.TestCase):
         )
         Path("/tmp/fixture-proj").mkdir(
             parents=True, exist_ok=True
-        )  # fixture 会话的 cwd
+        )  # fixture session cwd
         self.env = {
             "CAF_CC_PROJECTS": str(projects),
             "CAF_CODEX_HOME": str(codex),
@@ -126,7 +126,7 @@ class CliTest(unittest.TestCase):
         import caf.cli as cli_mod
 
         old = cli_mod._stdout_isatty
-        cli_mod._stdout_isatty = lambda: True  # TTY：显示引导行
+        cli_mod._stdout_isatty = lambda: True  # TTY shows guidance
         code, out = _run(["list"])
         cli_mod._stdout_isatty = old
         self.assertEqual(code, 0)
@@ -215,9 +215,9 @@ class CliTest(unittest.TestCase):
     def test_fork_writes(self):
         code, out = _run(["fork", "cc:00000000", "--into", "codex"])
         self.assertEqual(code, 0)
-        self.assertIn("✓ cc:00000000 → codex:", out)
+        self.assertIn("✓ forked  cc:00000000 → codex:", out)
         self.assertIn("codex resume 019e-fake-thread", out)
-        self.assertIn("source unchanged", out)
+        self.assertEqual(len(out.strip().splitlines()), 2)
 
     def test_fork_json_uses_user_turns_and_messages(self):
         code, out = _run(["fork", "cc:00000000", "--into", "codex", "--json"])
@@ -230,7 +230,7 @@ class CliTest(unittest.TestCase):
     def test_fork_at_boundary(self):
         code, out = _run(["fork", "cc:00000000", "--at", "1", "--into", "codex"])
         self.assertEqual(code, 0)
-        self.assertIn("1 user turn / 2 messages", out)  # u1 + a1
+        self.assertEqual(len(out.strip().splitlines()), 2)
         self.assertIn("@1", out)
 
     def test_fork_at_out_of_range(self):
@@ -263,7 +263,7 @@ class CliTest(unittest.TestCase):
             cli_mod._stdin_isatty = old
         self.assertEqual(code, 0)
         self.assertIn(
-            "✓ cc:00000000 → codex:", out
+            "✓ forked  cc:00000000 → codex:", out
         )  # codex excluded as target -> cc source
         self.assertIn("codex resume 019e-fake-thread", out)
 
@@ -283,7 +283,7 @@ class CliTest(unittest.TestCase):
         code, out = _run(["fork", "--into", "claude"])
         self.assertEqual(code, 0)
         self.assertIn(
-            "✓ codex:019e0000 → cc:", out
+            "✓ forked  codex:019e0000 → cc:", out
         )  # cc excluded as target -> codex source
         self.assertIn("claude --resume", out)
 
@@ -300,7 +300,7 @@ class CliTest(unittest.TestCase):
             )
         self.assertEqual(code, 0)
         self.assertIn("claude --resume", out)
-        self.assertIn("✓ codex:019e0000 → cc:", out)
+        self.assertIn("✓ forked  codex:019e0000 → cc:", out)
 
     def test_resolve_target_skips_write_unavailable(self):
         """Target candidates must be write_ready; a read-only adapter is not offered."""
@@ -420,25 +420,6 @@ class CliTest(unittest.TestCase):
             status, {"claude": "ok", "codex": "ok", "deepseek-harness": "off"}
         )
 
-    def test_install_skill_codex(self):
-        """install-skill copies the bundled skill into the agent's skills dir (idempotent)."""
-        agents_dir = str(Path(self.tmp) / "agents-skills")
-        code, out = _run(
-            ["install-skill", "codex"], env_overrides={"CAF_AGENTS_DIR": agents_dir}
-        )
-        self.assertEqual(code, 0)
-        self.assertIn("installed", out)
-        dst = Path(agents_dir) / "caf"
-        self.assertTrue((dst / "SKILL.md").is_file())
-        # idempotent reinstall
-        code2, _ = _run(["install-skill"], env_overrides={"CAF_AGENTS_DIR": agents_dir})
-        self.assertEqual(code2, 0)
-
-    def test_install_skill_unknown_target(self):
-        code, out = _run(["install-skill", "gemini"])
-        self.assertEqual(code, 1)
-        self.assertIn("Unsupported", out)
-
     def test_fork_interactive_prefix_selection(self):
         """Interactive mode: id-prefix source pick -> confirm -> real fork (stdin + isatty injection)."""
         import caf.cli as cli_mod
@@ -458,7 +439,7 @@ class CliTest(unittest.TestCase):
             cli_mod._stdin_isatty = old_isatty
         self.assertEqual(code, 0)
         text = out.getvalue()
-        self.assertIn("✓ codex:019e0000 → cc:", text)
+        self.assertIn("✓ forked  codex:019e0000 → cc:", text)
         self.assertIn("claude --resume", text)
 
 

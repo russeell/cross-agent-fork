@@ -22,11 +22,12 @@ import zstandard as zstd
 from caf.adapters import Adapter
 from caf.core import (
     CafError,
-    SessionIR,
+    ForkSnapshot,
     SessionMeta,
-    ToolEvidence,
     Turn,
-    with_tool_lines,
+    append_evidence,
+    tool_call_text,
+    tool_result_text,
 )
 
 _SAFE = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-")
@@ -197,7 +198,7 @@ class DshAdapter(Adapter):
             last_active_at=stat.st_mtime,
         )
 
-    def load_session(self, sid: str) -> SessionIR:
+    def load_session(self, sid: str) -> ForkSnapshot:
         meta = self.find_session(sid)
         if not meta:
             raise CafError(
@@ -205,27 +206,44 @@ class DshAdapter(Adapter):
             )
         events = self._read_events(Path(meta.source_path))
         turns: list[Turn] = []
+        pending: dict[str, tuple[int, str]] = {}
+        current_turn: int | None = None
+        turn_ordinals: dict[int, int] = {}
+        ended: set[int] = set()
+        user_turn = 0
         for ev in events[1:]:
             t = ev.get("type")
             data = ev.get("data") or {}
-            if t == "user/message" and (data.get("source") or {}).get("kind") != "tool":
+            if t == "turn/start":
+                current_turn = data.get("turn")
+            elif t == "turn/end":
+                native_turn = data.get("turn")
+                if isinstance(native_turn, int):
+                    ended.add(native_turn)
+            elif (
+                t == "user/message" and (data.get("source") or {}).get("kind") != "tool"
+            ):
                 text = _text_from_content(data.get("content"))
                 if text:
                     turns.append(Turn("user", text))
+                    user_turn += 1
+                    if isinstance(current_turn, int):
+                        turn_ordinals[current_turn] = user_turn
             elif t == "assistant/message":
                 msg = data.get("message") or {}
                 text = _text_from_content(msg.get("content"))
                 if text:
                     turns.append(Turn("assistant", text))
             elif t == "tool/call" and turns and turns[-1].role == "assistant":
-                turns[-1].tools.append(
-                    ToolEvidence(
-                        name=str(data.get("name", "tool")),
-                        call_id=str(data.get("callId", "")),
-                        arguments=_argument_text(data.get("arguments", "")),
-                    )
+                name = str(data.get("name", "tool"))
+                call_id = str(data.get("callId", ""))
+                turns[-1].text = append_evidence(
+                    turns[-1].text,
+                    tool_call_text(name, _argument_text(data.get("arguments", ""))),
                 )
-            elif t == "tool/result" and turns and turns[-1].role == "assistant":
+                if call_id:
+                    pending[call_id] = (len(turns) - 1, name)
+            elif t == "tool/result":
                 msg = data.get("message") or {}
                 result_text = ""
                 for block in msg.get("content") or []:
@@ -237,12 +255,23 @@ class DshAdapter(Adapter):
                     result_text = _text_from_content(block.get("content"))
                     break
                 call_id = (msg.get("source") or {}).get("callId", "")
-                for tool in reversed(turns[-1].tools):
-                    if tool.call_id == call_id:
-                        tool.result = result_text
-                        tool.status = "error" if data.get("error") else "ok"
-                        break
-        return SessionIR(meta, turns)
+                match = pending.get(call_id)
+                if not match:
+                    if not turns or turns[-1].role != "assistant":
+                        turns.append(Turn("assistant", ""))
+                    idx, name = len(turns) - 1, "tool"
+                else:
+                    idx, name = match
+                turns[idx].text = append_evidence(
+                    turns[idx].text,
+                    tool_result_text(name, result_text, bool(data.get("error"))),
+                )
+        unfinished = {
+            ordinal
+            for native_turn, ordinal in turn_ordinals.items()
+            if native_turn not in ended
+        }
+        return ForkSnapshot(meta, turns, unfinished_turns=unfinished)
 
     def resume_command(self, sid: str, project_dir: str | None) -> str:
         prefix = f"cd {shlex.quote(project_dir)} && " if project_dir else ""
@@ -253,9 +282,9 @@ class DshAdapter(Adapter):
         opener = "open" if sys.platform == "darwin" else "xdg-open"
         return f"{opener} http://127.0.0.1:3080  # dsh web: open the session list and continue ({sid[:8]})"
 
-    def write(self, ir: SessionIR) -> str:
+    def write(self, snapshot: ForkSnapshot) -> str:
         """Write a native DSH session: header + event sequence, zstd-compressed, atomic write."""
-        cwd = ir.session.project_dir
+        cwd = snapshot.session.project_dir
         if not cwd or not os.path.isdir(cwd):
             raise CafError(
                 "Cannot fork: source working directory is unknown or does not exist."
@@ -267,7 +296,7 @@ class DshAdapter(Adapter):
         turn = 0
         first_user_seq: int | None = None
         turn_open = False
-        for t in ir.turns:
+        for t in snapshot.turns:
             if t.role == "user":
                 if turn_open:
                     # close the previous turn first (multi-part input / consecutive users)
@@ -309,7 +338,6 @@ class DshAdapter(Adapter):
                 )
                 seq += 1
             elif t.role == "assistant":
-                text = with_tool_lines(t.text, t.tools)
                 events.append(
                     {
                         "type": "assistant/message",
@@ -322,8 +350,8 @@ class DshAdapter(Adapter):
                             "message": {
                                 "id": str(uuid4()),
                                 "role": "assistant",
-                                "content": [{"type": "text", "text": text}]
-                                if text
+                                "content": [{"type": "text", "text": t.text}]
+                                if t.text
                                 else [],
                                 "source": {
                                     "kind": "model",
@@ -358,13 +386,13 @@ class DshAdapter(Adapter):
         lines = [json.dumps(header, ensure_ascii=False)]
         lines += [json.dumps(ev, ensure_ascii=False) for ev in events]
 
-        if ir.session.title and first_user_seq is not None:
+        if snapshot.session.title and first_user_seq is not None:
             title_ev = {
                 "type": "session/title",
                 "seq": seq,
                 "time": now_ms,
                 "data": {
-                    "title": ir.session.title[:120],
+                    "title": snapshot.session.title[:120],
                     "messageSeqs": [first_user_seq],
                     "source": {"kind": "fallback"},
                 },

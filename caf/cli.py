@@ -1,14 +1,12 @@
-"""caf CLI: fork / list / doctor / install-skill."""
+"""caf CLI: fork / list / doctor."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import os
-import shutil
 import sys
 from datetime import datetime
-from pathlib import Path
 
 from caf import __version__
 from caf.adapters import Adapter, discover_adapters, get_adapter
@@ -153,10 +151,6 @@ def _turn_stats(turns) -> tuple[int, int]:
     """(user turns, total items) — 'turns' always means user messages, consistent with list and --at."""
     users = sum(1 for t in turns if t.role == "user")
     return users, len(turns)
-
-
-def _turns_label(n: int) -> str:
-    return f"{n} user turn" if n == 1 else f"{n} user turns"
 
 
 def _usable_sessions(adapters: list[Adapter]) -> list[SessionMeta]:
@@ -346,18 +340,20 @@ def cmd_fork(args) -> int:
         src_adapter, source_meta = _resolve_source(adapters, None, into=args.into)
         target = _resolve_target(adapters, source_meta, args.into)
 
-    ir = src_adapter.load_session(source_meta.session_id)
+    snapshot = src_adapter.load_session(source_meta.session_id)
     target_name = target.agent_id
 
     fork_note = ""
-    user_turns, total_items = _turn_stats(ir.turns)
+    user_turns, total_items = _turn_stats(snapshot.turns)
     if args.at is not None:
-        ir.turns, warning = slice_turns(ir.turns, args.at)
-        ir.modified = True
-        user_turns, total_items = _turn_stats(ir.turns)
+        snapshot.turns, warning = slice_turns(
+            snapshot.turns, args.at, snapshot.unfinished_turns
+        )
+        snapshot.modified = True
+        user_turns, total_items = _turn_stats(snapshot.turns)
         if warning:
             print(f"warning: {warning}")
-        if not ir.turns:
+        if not snapshot.turns:
             raise CafError("Nothing to fork")
         fork_note = f" @{args.at}"
 
@@ -372,7 +368,7 @@ def cmd_fork(args) -> int:
             hint="Pick another session with caf list --all",
         )
 
-    new_id = target.write(ir)
+    new_id = target.write(snapshot)
 
     if not new_id:
         raise CafError("Verify failed: official import returned no thread id")
@@ -396,11 +392,10 @@ def cmd_fork(args) -> int:
         return 0
 
     print(
-        f"✓ {source_meta.provider_id}:{source_meta.session_id[:8]}{fork_note} "
+        f"✓ forked  {source_meta.provider_id}:{source_meta.session_id[:8]}{fork_note} "
         f"→ {target_name}:{new_id[:12]}"
     )
-    print(f"  source unchanged ({_turns_label(user_turns)} / {total_items} messages)")
-    print(f"→ {resume_cmd}")
+    print(f"  resume  {resume_cmd}")
     return 0
 
 
@@ -509,45 +504,10 @@ def cmd_doctor(args) -> int:
     return 0
 
 
-# ---------------------------------------------------------------- main
-
-
-_SKILL_SRC = Path(__file__).parent / "skills" / "caf"
-
-
-def cmd_install_skill(args) -> int:
-    """Install the caf skill into an agent (codex default): one command, no manual copy."""
-    targets = {
-        "codex": Path(
-            os.environ.get("CAF_AGENTS_DIR", str(Path.home() / ".agents" / "skills"))
-        ),
-        "claude": Path(
-            os.environ.get(
-                "CAF_CLAUDE_SKILLS_DIR", str(Path.home() / ".claude" / "skills")
-            )
-        ),
-    }
-    agent = args.agent or "codex"
-    if agent not in targets:
-        raise CafError(f"Unsupported skill target: {agent}", hint="codex | claude")
-    src = _SKILL_SRC
-    if not src.is_dir():
-        raise CafError(
-            "Skill bundle not found in this installation",
-            hint="Reinstall cross-agent-fork",
-        )
-    dst = targets[agent] / "caf"
-    shutil.copytree(src, dst, dirs_exist_ok=True)
-    n = sum(1 for f in dst.rglob("*") if f.is_file())
-    print(f"✓ installed: {dst} ({n} files)")
-    return 0
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="caf",
-        description="Bring native agent fork across agent boundaries: conversation + cwd + resumable identity, "
-        "original untouched",
+        description="Bring native agent fork across agent boundaries.",
     )
     parser.add_argument("--version", action="version", version=f"caf {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -585,17 +545,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_doc = sub.add_parser("doctor", help="Health check and fix suggestions")
     p_doc.add_argument("--json", action="store_true")
     p_doc.set_defaults(func=cmd_doctor)
-
-    p_skill = sub.add_parser(
-        "install-skill", help="Install the caf skill into an agent"
-    )
-    p_skill.add_argument(
-        "agent",
-        nargs="?",
-        default="codex",
-        help="Target agent (codex default, or claude)",
-    )
-    p_skill.set_defaults(func=cmd_install_skill)
 
     return parser
 

@@ -14,7 +14,7 @@ from caf.adapters.codex import (
     _parse_import_completed,
     import_external_session,
 )
-from caf.core import CafError, SessionIR, SessionMeta, Turn
+from caf.core import CafError, ForkSnapshot, SessionMeta, Turn
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -62,10 +62,46 @@ class ClaudeAdapterTest(unittest.TestCase):
         self.assertEqual(len(ir.turns), 4)
         self.assertEqual(ir.turns[0].role, "user")
         self.assertIn("PKCE", ir.turns[0].text)
-        self.assertEqual(ir.turns[1].tools[0].name, "Read")
-        self.assertIn("src/auth.py", ir.turns[1].tools[0].arguments)
-        self.assertEqual(ir.turns[1].tools[0].result, "def login(): ...")
-        self.assertEqual(ir.turns[1].tools[0].status, "ok")
+        self.assertIn("[tool] Read", ir.turns[1].text)
+        self.assertIn("src/auth.py", ir.turns[1].text)
+        self.assertIn("[tool result] Read · ok", ir.turns[1].text)
+        self.assertIn("def login(): ...", ir.turns[1].text)
+        self.assertEqual(ir.unfinished_turns, set())
+
+    def test_load_marks_interrupted_tail_unfinished(self):
+        projects = Path(os.environ["CAF_CC_PROJECTS"])
+        d = projects / "-tmp-interrupted"
+        d.mkdir(parents=True)
+        sid = "cccccccc-0000-0000-0000-000000000001"
+        (d / f"{sid}.jsonl").write_text(
+            '{"type":"user","message":{"role":"user","content":"u1"},"cwd":"/tmp/fixture-proj"}\n'
+            '{"type":"assistant","message":{"role":"assistant","content":"partial"}}\n',
+            encoding="utf-8",
+        )
+        snapshot = ClaudeAdapter().load_session(sid)
+        self.assertEqual(snapshot.unfinished_turns, {1})
+
+    def test_load_treats_abort_marker_as_control_event(self):
+        projects = Path(os.environ["CAF_CC_PROJECTS"])
+        d = projects / "-tmp-aborted"
+        d.mkdir(parents=True)
+        sid = "cccccccc-0000-0000-0000-000000000002"
+        (d / f"{sid}.jsonl").write_text(
+            '{"type":"user","message":{"role":"user","content":"u1"},"cwd":"/tmp/fixture-proj"}\n'
+            '{"type":"assistant","message":{"role":"assistant","content":"partial"}}\n'
+            '{"type":"user","message":{"role":"user","content":"<turn_aborted>stopped</turn_aborted>"}}\n'
+            '{"type":"user","message":{"role":"user","content":"u2"},"cwd":"/tmp/fixture-proj"}\n'
+            '{"type":"assistant","message":{"role":"assistant","content":"done","stop_reason":"end_turn"}}\n',
+            encoding="utf-8",
+        )
+        adapter = ClaudeAdapter()
+        meta = adapter.find_session(sid)
+        snapshot = adapter.load_session(sid)
+        self.assertEqual(meta.turns, 2)
+        self.assertEqual(
+            [turn.text for turn in snapshot.turns if turn.role == "user"], ["u1", "u2"]
+        )
+        self.assertEqual(snapshot.unfinished_turns, {1})
 
     def test_write_roundtrip(self):
         adapter = ClaudeAdapter()
@@ -76,7 +112,7 @@ class ClaudeAdapterTest(unittest.TestCase):
             new_id
         )  # fresh instance: no stale scan cache
         self.assertEqual(len(reloaded.turns), 4)
-        self.assertIn("[tool] Read · ok", reloaded.turns[1].text)
+        self.assertIn("[tool] Read", reloaded.turns[1].text)
         self.assertIn("src/auth.py", reloaded.turns[1].text)  # tool arguments preserved
         self.assertIn(
             "def login(): ...", reloaded.turns[1].text
@@ -95,7 +131,7 @@ class ClaudeAdapterTest(unittest.TestCase):
         adapter = ClaudeAdapter()
         other = Path(self.tmp) / "other-project"
         other.mkdir(parents=True, exist_ok=True)
-        ir = SessionIR(
+        ir = ForkSnapshot(
             SessionMeta("codex", "src", project_dir=str(other)),
             [],
         )
@@ -109,7 +145,7 @@ class ClaudeAdapterTest(unittest.TestCase):
 
     def test_write_rejects_unknown_cwd(self):
         with self.assertRaises(CafError):
-            ClaudeAdapter().write(SessionIR(SessionMeta("codex", "src"), []))
+            ClaudeAdapter().write(ForkSnapshot(SessionMeta("codex", "src"), []))
 
     def test_ai_title_priority(self):
         adapter = ClaudeAdapter()
@@ -288,11 +324,47 @@ class CodexAdapterTest(unittest.TestCase):
         ).write_text("\n".join(_json.dumps(e) for e in evs) + "\n", encoding="utf-8")
         meta = adapter.find_session("019f9999")
         ir = adapter.load_session(meta.session_id)
-        tool = ir.turns[1].tools[0]
-        self.assertEqual(tool.name, "Read")
-        self.assertIn("src/auth.py", tool.arguments)
-        self.assertIn("TOOL-MARKER-7", tool.result)
-        self.assertEqual(tool.status, "ok")
+        evidence = ir.turns[1].text
+        self.assertIn("[tool] Read", evidence)
+        self.assertIn("src/auth.py", evidence)
+        self.assertIn("[tool result] Read · ok", evidence)
+        self.assertIn("TOOL-MARKER-7", evidence)
+
+    def test_load_marks_aborted_turn_unfinished(self):
+        import json as _json
+
+        home = Path(os.environ["CAF_CODEX_HOME"])
+        d = home / "sessions" / "2026" / "08" / "01"
+        sid = "019f9999-0000-0000-0000-000000000088"
+        events = [
+            {
+                "type": "session_meta",
+                "payload": {"id": sid, "cwd": "/tmp/fixture-proj"},
+            },
+            {
+                "type": "event_msg",
+                "payload": {"type": "task_started", "turn_id": "turn-1"},
+            },
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "text", "text": "u1"}],
+                },
+            },
+            {
+                "type": "event_msg",
+                "payload": {"type": "turn_aborted", "turn_id": "turn-1"},
+            },
+        ]
+        path = d / f"rollout-2026-08-01T10-00-00-{sid}.jsonl"
+        path.write_text(
+            "\n".join(_json.dumps(event) for event in events) + "\n",
+            encoding="utf-8",
+        )
+        snapshot = CodexAdapter().load_session(sid)
+        self.assertEqual(snapshot.unfinished_turns, {1})
 
     @mock.patch(
         "caf.adapters.codex.import_external_session", return_value="019e-fake-thread"
@@ -301,7 +373,7 @@ class CodexAdapterTest(unittest.TestCase):
         adapter = CodexAdapter()
         src = Path(self.tmp) / "x.jsonl"
         src.write_text("{}", encoding="utf-8")
-        ir = SessionIR(
+        ir = ForkSnapshot(
             SessionMeta(
                 "claude", "src", project_dir="/tmp/fixture-proj", source_path=str(src)
             ),
@@ -314,7 +386,7 @@ class CodexAdapterTest(unittest.TestCase):
     @mock.patch("caf.adapters.codex.import_external_session")
     def test_write_rejects_unknown_cwd(self, imp):
         with self.assertRaises(CafError):
-            CodexAdapter().write(SessionIR(SessionMeta("cc", "src"), []))
+            CodexAdapter().write(ForkSnapshot(SessionMeta("cc", "src"), []))
         imp.assert_not_called()
 
     def test_write_bridges_non_cc_source(self):
@@ -326,7 +398,7 @@ class CodexAdapterTest(unittest.TestCase):
             "caf.adapters.codex.import_external_session",
             return_value="019e-bridged-thread",
         ) as imp:
-            ir = SessionIR(
+            ir = ForkSnapshot(
                 SessionMeta(
                     "dsh",
                     "session-abc",
@@ -339,7 +411,7 @@ class CodexAdapterTest(unittest.TestCase):
         self.assertEqual(new_id, "019e-bridged-thread")
         arg_source = imp.call_args.args[0]
         self.assertIn("__caf_bridge__", arg_source)
-        self.assertFalse(Path(arg_source).exists())  # 用完即删
+        self.assertFalse(Path(arg_source).exists())  # bridge is deleted after import
 
     def test_write_bridges_modified_ir(self):
         """CC source but IR was sliced (--at) -> must use the mirror bridge, not the source file."""
@@ -353,7 +425,7 @@ class CodexAdapterTest(unittest.TestCase):
             "caf.adapters.codex.import_external_session",
             return_value="019e-modified-thread",
         ) as imp:
-            ir = SessionIR(
+            ir = ForkSnapshot(
                 SessionMeta(
                     "cc",
                     "9f3a12",
@@ -379,7 +451,7 @@ class CodexAdapterTest(unittest.TestCase):
 
         from unittest import mock as _mock
 
-        ir = SessionIR(
+        ir = ForkSnapshot(
             SessionMeta("cc", "9f3a12", title="t", project_dir="/tmp/fixture-proj"),
             [
                 Turn("user", "u1"),
@@ -398,8 +470,8 @@ class CodexAdapterTest(unittest.TestCase):
             new_id = CA().write(ir)
         self.assertEqual(new_id, "019e-mirror-ok")
         lines = captured["lines"]
-        self.assertEqual(len(lines), 5)  # queue-op×2 + summary + user + assistant
-        self.assertNotIn("u2", "\n".join(lines))  # 边界外的轮次不在镜像里
+        self.assertEqual(len(lines), 5)  # two queue ops + summary + user + assistant
+        self.assertNotIn("u2", "\n".join(lines))  # post-boundary turn is excluded
 
     def test_parse_import_completed(self):
         params = {

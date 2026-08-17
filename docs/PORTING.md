@@ -19,7 +19,7 @@ class Adapter:
     def store_path(self) -> str     # shown by doctor
     def store_version(self) -> str  # version, or "" when unknown
     def scan_sessions(self) -> list[SessionMeta]
-    def load_session(self, sid) -> SessionIR   # text turns + tool evidence
+    def load_session(self, sid) -> ForkSnapshot   # text turns containing portable evidence
     def resume_command(self, sid, project_dir) -> str
     def write(self, ir) -> str      # native session, returns the new session id
 ```
@@ -40,8 +40,8 @@ Every adapter must honor the fork semantics, not just the file format:
    (a session with unknown cwd is not forkable).
 5. **Exact fork point** — `--at N` forks exactly through turn N; an unfinished turn
    fails loudly instead of silently moving the boundary.
-6. **Portable evidence preserved** — user/assistant text plus tool call/result evidence
-   survive the crossing; tool status is observed, never guessed ("unknown" until proven).
+6. **Portable evidence preserved** — readers turn tool calls/results into portable text.
+   Unknown status is omitted; only an observed result is marked `ok` or `error`.
 7. **No invented state** — write atomically (temp + rename), verify by reading back,
    roll back on failure, and only touch sessions caf itself created.
 

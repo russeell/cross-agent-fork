@@ -4,19 +4,20 @@
 
 > 把 Agent 内置 fork 带到不同 Agent 之间。
 
-`caf` 会基于源会话的对话、工作目录和关键工具证据，在另一个 Agent 里创建新的原生可恢复会话。
-原会话保持不变。
+Coding Agent 的内置 fork 通常只能 fork 给自己。`caf` 把这个 primitive 带到 Agent
+边界之外：基于源对话、工作目录和可移植工具证据，在目标 Agent 中创建一个新的原生
+可恢复会话。源会话保持不变。
 
-当前支持 Claude Code、Codex、DeepSeek Harness。
+当前支持 Claude Code、Codex 和 DeepSeek Harness。
 已在 macOS / Linux 验证。
 
 ```bash
-caf fork cc:last --into codex
+caf fork --into codex
 ```
 
 ```text
-✓ cc:9f3a → codex
-→ codex resume 019...
+✓ forked  cc:9f3a → codex:019...
+  resume  codex resume 019...
 ```
 
 ## 安装
@@ -25,46 +26,48 @@ caf fork cc:last --into codex
 pipx install git+https://github.com/russeell/cross-agent-fork.git
 ```
 
-想在 agent（Codex / Claude Code）里用 caf，再装 skill：
+可选的 Agent skill 位于 [`caf/skills/caf/`](caf/skills/caf/)。CAF 只提供集成文件，
+不负责管理 skill 的安装生命周期。可以直接对 Agent 说：
 
-```bash
-caf install-skill          # codex（默认）；或: caf install-skill claude
+```text
+请从 https://github.com/russeell/cross-agent-fork/tree/main/caf/skills/caf
+读取并按你原生的 skill 安装方式安装 caf skill，然后确认它可用。
 ```
 
-装完后直接说"把这个会话 fork 到 Codex"即可。
+装完后直接说“把这个会话 fork 到 Codex”。skill 会传入 `<当前 Agent>:last`，避免
+CAF 在多个 Agent 之间猜源；如果能拿到精确 session ID，就应直接使用 ID。
 
 ## 快速开始
 
 ```bash
 caf fork                      # 交互选择
-caf fork --into codex         # 在当前项目里：把这里最近的会话 fork 到 Codex
+caf fork --into codex         # 当前项目中最近的会话 → Codex
 caf fork cc:last --into codex # 最近的 Claude Code 会话 → Codex
-caf fork cc:last --at 12 --into codex  # 从第 12 轮结束处 fork（前 1~12 轮全部保留）
+caf fork cc:last --at 12 --into codex  # 从第 12 轮结束处 fork
 ```
 
-源会话永远不会被修改。每次 fork 结束都会给出一条可直接粘贴的目标 agent 恢复命令。
+源会话永远不会被修改。每次 fork 结束都会给出一条可直接粘贴的目标 Agent 恢复命令。
 
-## 做到一半换 agent
+## 做到一半换 Agent
 
-真实流程是这样的——你在 Claude Code 里做到一半，想交给 Codex：
+你在 Claude Code 里做到一半，想切到 Codex：
 
 ```text
 $ caf fork --into codex
-✓ cc:9f3a... → codex:019abc...
-  source unchanged（24 轮 / 110 条消息，原会话不动）
-→ codex resume 019abc...
+✓ forked  cc:9f3a... → codex:019abc...
+  resume  codex resume 019abc...
 
 $ codex resume 019abc...
 > 继续刚才的任务。
 ```
 
-Codex 会直接接上——它知道目标、你改过的文件、还有哪些没做完，不需要你重新解释。
-双向真实验证过：Claude Code → Codex 和 Codex → Claude Code（以及 → DeepSeek Harness）。
+目标 Agent 会得到继续这个 fork 所需的可移植对话证据。具体保留范围见下文；CAF
+不承诺迁移 Agent 配置或隐藏运行状态。
 
-## 支持
+## 支持的 Agent
 
 | Agent | Fork from | Fork to |
-|---|---:|---:|
+|---|---|---|
 | Claude Code | ✓ | ✓ |
 | Codex | ✓ | ✓ |
 | DeepSeek Harness | ✓ | ✓ |
@@ -72,29 +75,26 @@ Codex 会直接接上——它知道目标、你改过的文件、还有哪些�
 ## 其他命令
 
 ```bash
-caf list    # 浏览各 agent 会话（-s 关键词搜索 / --all / --limit N）
-caf doctor  # 健康检查：每个 agent 的读/写状态
+caf list    # 浏览各 Agent 会话（-s 关键词搜索 / --all / --limit N）
+caf doctor  # 检查每个 Agent 的读写状态
 ```
 
-## 任意边界分叉
+## 从指定轮次 fork
 
-`--at N` 从第 N 轮结束处 fork，新会话保留此前全部上下文——想绕开出问题的部分时很有用：
+`--at N` 会精确 fork 到第 N 个用户轮次结束处，新会话只保留从开头到该轮的内容。
+如果第 N 轮尚未完成，CAF 会明确报错，不会悄悄退回上一轮。
 
 ```bash
 caf fork cc:last --at 12 --into codex
 ```
 
-## 附加能力
-
-- **Agent 集成（skills）** — `caf install-skill codex`（或 `claude`）自动安装随包携带的 skill；装完后直接说"把这个会话 fork 到 Codex"即可。
-
 ## 工作原理
 
-会话的文本轮次和必要工具证据会被重放成目标 agent 的原生格式：Codex 走官方导入 API，
-Claude Code 和 DeepSeek Harness 走薄信封。`caf` 不维护数据库或持久状态——每次 fork
-只创建一个新的目标原生会话，源会话保持不变。
+Reader 将文本轮次和工具调用/结果转换成可移植文本证据，再由目标 Adapter 写成原生
+可恢复格式：Codex 使用官方导入 API，Claude Code 和 DeepSeek Harness 使用轻量本地
+信封。`caf` 不维护数据库或持久状态；每次 fork 创建新的目标会话，源会话保持不变。
 
-## 真机验证记录
+## 最近一次真机验证
 
 | 方向 | 验证 |
 |---|---|
@@ -105,22 +105,22 @@ Claude Code 和 DeepSeek Harness 走薄信封。`caf` 不维护数据库或持�
 | DeepSeek Harness → Claude Code | ✅ |
 | DeepSeek Harness → Codex | ✅ |
 
-验证方式：fork 真实进行中的会话，在目标 agent resume 后不重新解释任务即可继续。
-Agent 会话格式会变化，日期才是最诚实的信号：2026-08-17。
+验证包括真实源会话、目标 Agent 原生 resume、cwd 检查和上下文 marker。
+Agent 会话格式会变化，最近一次真机验证日期为 2026-08-17。
 
 ## 局限
 
-- 只搬运文本轮次和工具证据；配置、权限、附件、git 状态不迁移。
+- 保留文本轮次和可移植工具证据；配置、权限、附件、隐藏 Agent 状态和 git 状态不保留。
 
-## 贡献 / 新增 agent
+## 贡献 / 新增 Agent
 
-Adapter 是轻量的读写模块——见 [docs/PORTING.md](docs/PORTING.md)。
+Adapter 是轻量读写模块，参见 [docs/PORTING.md](docs/PORTING.md)。
 
 ## 非目标
 
-- 不做 GUI/TUI、记忆层、工作区管理、云同步
-- 不做同 agent fork（用原生）、配置迁移
-- 不承诺今天三个 agent 之外的能力——新 agent 通过 adapter 加入
+- 不做 GUI/TUI、记忆层、工作区管理或云同步
+- 不做同 Agent fork（使用 Agent 原生 fork），不迁移配置
+- 不承诺当前三个 Agent 之外的能力；新 Agent 通过 Adapter 加入
 
 ## License
 

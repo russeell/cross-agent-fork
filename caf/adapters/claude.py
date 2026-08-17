@@ -13,13 +13,14 @@ from uuid import uuid4
 from caf.adapters import Adapter
 from caf.core import (
     CafError,
-    SessionIR,
+    ForkSnapshot,
     SessionMeta,
-    ToolEvidence,
     Turn,
+    append_evidence,
     atomic_write,
     read_jsonl,
-    with_tool_lines,
+    tool_call_text,
+    tool_result_text,
 )
 
 
@@ -56,8 +57,13 @@ def _text_blocks(message) -> str | None:
     return "\n".join(parts) if parts else None
 
 
-def _tool_blocks(message) -> list[ToolEvidence]:
-    """tool_use blocks -> evidence (status stays unknown until the matching result arrives)."""
+def _is_turn_aborted(text: str | None) -> bool:
+    """Cross-agent imports may store the interruption marker as a user message."""
+    return bool(text and text.strip().lower().startswith("<turn_aborted>"))
+
+
+def _tool_calls(message) -> list[tuple[str, str, str]]:
+    """tool_use blocks -> (call id, name, arguments) for adapter-local correlation."""
     content = message.get("content") if isinstance(message, dict) else None
     out = []
     if not isinstance(content, list):
@@ -67,10 +73,10 @@ def _tool_blocks(message) -> list[ToolEvidence]:
             continue
         inp = block.get("input") or {}
         out.append(
-            ToolEvidence(
-                name=str(block.get("name", "tool")),
-                call_id=str(block.get("id", "")),
-                arguments=json.dumps(inp, ensure_ascii=False)
+            (
+                str(block.get("id", "")),
+                str(block.get("name", "tool")),
+                json.dumps(inp, ensure_ascii=False)
                 if isinstance(inp, dict)
                 else str(inp),
             )
@@ -105,15 +111,15 @@ def _ts() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def render_cc_lines(ir: SessionIR, sid: str) -> list[str]:
+def render_cc_lines(snapshot: ForkSnapshot, sid: str) -> list[str]:
     """Build CC envelope JSONL lines with text and portable tool evidence."""
-    cwd = ir.session.project_dir
+    cwd = snapshot.session.project_dir
     if not cwd:
         raise CafError("Cannot fork: source working directory is unknown.")
     now = _ts()
     summary = {
         "type": "summary",
-        "summary": ir.session.title or "caf fork",
+        "summary": snapshot.session.title or "caf fork",
         "leafUuid": None,
         "cwd": cwd,
         "sessionId": sid,
@@ -139,15 +145,16 @@ def render_cc_lines(ir: SessionIR, sid: str) -> list[str]:
         summary,
     ]
     parent: str | None = None
-    for turn in ir.turns:
-        if not turn.text and not turn.tools:
-            continue  # empty turns (no semantic content) must not enter the envelope
-        text = with_tool_lines(turn.text, turn.tools)
+    semantic_turns = [turn for turn in snapshot.turns if turn.text]
+    for i, turn in enumerate(semantic_turns):
         uid = str(uuid4())
         message = {
             "role": turn.role,
-            "content": [{"type": "text", "text": text}] if text else [],
+            "content": [{"type": "text", "text": turn.text}],
         }
+        next_role = semantic_turns[i + 1].role if i + 1 < len(semantic_turns) else None
+        if turn.role == "assistant" and next_role != "assistant":
+            message["stop_reason"] = "end_turn"
         ev: dict = {
             "parentUuid": parent,
             "type": turn.role,
@@ -212,11 +219,12 @@ class ClaudeAdapter(Adapter):
             elif t == "user":
                 msg = ev.get("message") or {}
                 if msg.get("role") == "user" and not ev.get("isMeta"):
+                    text = _text_blocks(msg)
+                    if _is_turn_aborted(text):
+                        continue
                     turns += 1
-                    if not first_user:
-                        text = _text_blocks(msg)
-                        if text:
-                            first_user = " ".join(text.split())
+                    if not first_user and text:
+                        first_user = " ".join(text.split())
                     if not cwd and isinstance(ev.get("cwd"), str):
                         cwd = ev["cwd"]
         if not title and first_user:
@@ -237,13 +245,17 @@ class ClaudeAdapter(Adapter):
             last_active_at=stat.st_mtime,
         )
 
-    def load_session(self, sid: str) -> SessionIR:
+    def load_session(self, sid: str) -> ForkSnapshot:
         meta = self.find_session(sid)
         if not meta:
             raise CafError(
                 f"Claude Code session not found: {sid}", hint="caf list --all"
             )
         turns: list[Turn] = []
+        pending: dict[str, tuple[int, str]] = {}
+        user_turn = 0
+        completed: set[int] = set()
+        aborted: set[int] = set()
         for ev in read_jsonl(Path(meta.source_path)):
             t = ev.get("type")
             if t == "user":
@@ -254,32 +266,58 @@ class ClaudeAdapter(Adapter):
                     text = _text_blocks(msg)
                     if text is None:
                         continue
+                    if _is_turn_aborted(text):
+                        if user_turn:
+                            aborted.add(user_turn)
+                            completed.discard(user_turn)
+                        continue
+                    if user_turn and user_turn not in aborted:
+                        # A following real user message proves the previous boundary
+                        # closed even when old CC logs omitted stop_reason.
+                        completed.add(user_turn)
                     turns.append(Turn("user", text))
-                    continue
-                # isMeta user message: tool_result blocks complete the previous assistant's tools
-                if not turns or turns[-1].role != "assistant":
+                    user_turn += 1
                     continue
                 for tid, (result, status) in _tool_results(msg).items():
-                    for tool in reversed(turns[-1].tools):
-                        if tool.call_id == tid:
-                            tool.result = result
-                            tool.status = status
-                            break
+                    match = pending.get(tid)
+                    if not match:
+                        if not turns or turns[-1].role != "assistant":
+                            turns.append(Turn("assistant", ""))
+                        idx, name = len(turns) - 1, "tool"
+                    else:
+                        idx, name = match
+                    turns[idx].text = append_evidence(
+                        turns[idx].text,
+                        tool_result_text(name, result, status == "error"),
+                    )
             elif t == "assistant":
                 msg = ev.get("message") or {}
                 text = _text_blocks(msg) or ""
-                tools = _tool_blocks(msg)
-                if text or tools:
-                    turns.append(Turn("assistant", text, tools))
-        return SessionIR(meta, turns)
+                calls = _tool_calls(msg)
+                for _, name, arguments in calls:
+                    text = append_evidence(text, tool_call_text(name, arguments))
+                if text:
+                    turns.append(Turn("assistant", text))
+                    idx = len(turns) - 1
+                    for call_id, name, _ in calls:
+                        if call_id:
+                            pending[call_id] = (idx, name)
+                    if (
+                        msg.get("stop_reason") == "end_turn"
+                        and user_turn
+                        and user_turn not in aborted
+                    ):
+                        completed.add(user_turn)
+        unfinished = (set(range(1, user_turn + 1)) - completed) | aborted
+        return ForkSnapshot(meta, turns, unfinished_turns=unfinished)
 
     def resume_command(self, sid: str, project_dir: str | None) -> str:
         prefix = f"cd {shlex.quote(project_dir)} && " if project_dir else ""
         return f"{prefix}claude --resume {sid}"
 
-    def write(self, ir: SessionIR) -> str:
+    def write(self, snapshot: ForkSnapshot) -> str:
         """Write a native CC JSONL envelope: queue-operation prefix + parentUuid chain."""
-        cwd = ir.session.project_dir
+        cwd = snapshot.session.project_dir
         if not cwd or not os.path.isdir(cwd):
             raise CafError(
                 "Cannot fork: source working directory is unknown or does not exist."
@@ -288,7 +326,7 @@ class ClaudeAdapter(Adapter):
         target_dir.mkdir(parents=True, exist_ok=True)
         sid = str(uuid4())
         path = target_dir / f"{sid}.jsonl"
-        atomic_write(path, "\n".join(render_cc_lines(ir, sid)) + "\n")
+        atomic_write(path, "\n".join(render_cc_lines(snapshot, sid)) + "\n")
 
         # verify: read back and roll back on failure
         if self._meta_from_file(path) is None:

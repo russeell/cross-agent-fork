@@ -8,13 +8,14 @@ from pathlib import Path
 from caf.core import (
     CafError,
     SessionMeta,
-    ToolEvidence,
     Turn,
+    append_evidence,
     atomic_write,
     parse_session_ref,
     pick_recent_session,
     slice_turns,
-    with_tool_lines,
+    tool_call_text,
+    tool_result_text,
 )
 
 
@@ -100,12 +101,21 @@ class CoreTest(unittest.TestCase):
         with self.assertRaises(CafError):
             parse_session_ref("abc", adapters)
 
-    def test_with_tool_lines_canonical(self):
-        """Envelope text uses canonical English tokens."""
-        text = with_tool_lines(
-            "", [ToolEvidence("edit_file", status="ok", result="done")]
+    def test_tool_evidence_is_portable_text(self):
+        """Tool evidence stays textual; the core owns no tool schema."""
+        text = append_evidence("", tool_call_text("edit_file", '{"path":"a.py"}'))
+        text = append_evidence(text, tool_result_text("edit_file", "done", False))
+        self.assertEqual(
+            text,
+            '[tool] edit_file\nargs: {"path":"a.py"}\n[tool result] edit_file · ok\ndone',
         )
-        self.assertEqual(text, "[tool] edit_file · ok\n[tool-result] done")
+
+    def test_tool_call_does_not_invent_status(self):
+        self.assertEqual(tool_call_text("Read"), "[tool] Read")
+
+    def test_tool_result_is_not_truncated(self):
+        marker = "x" * 2500 + "TOOL_MARKER"
+        self.assertIn("TOOL_MARKER", tool_result_text("Read", marker, False))
 
     def test_pick_recent_skips_empty(self):
         empty = SessionMeta(
@@ -139,6 +149,11 @@ class CoreTest(unittest.TestCase):
             slice_turns(turns, 4)
         self.assertIn("unfinished", str(ctx.exception))
         self.assertIn("--at 3", ctx.exception.hint)
+
+    def test_slice_rejects_adapter_observed_unfinished_turn(self):
+        turns = self._turns(2)
+        with self.assertRaises(CafError):
+            slice_turns(turns, 2, {2})
 
     def test_slice_first_unfinished_turn_has_safe_hint(self):
         with self.assertRaises(CafError) as ctx:

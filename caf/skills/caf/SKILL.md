@@ -32,7 +32,8 @@ the current directory (excluding the target agent).
 
 ## After a fork
 
-Show the result and the final `→ resume:` command to the user. For a DSH web target,
+Show the two output lines verbatim in a fenced code block; do not summarize, translate,
+or reformat them. Explain anything else in the user's language. For a DSH web target,
 explain that the command opens the local session list; it is not an exact deep link.
 Do not start the target agent unless the user asks.
 
@@ -40,4 +41,5 @@ Do not start the target agent unless the user asks.
 
 - Only run forks the user explicitly asks for; never fork proactively.
 - Config/permissions/env are not migrated; the target agent uses its own.
-- `caf list` output is a plain-text table; in chat, render it as a Markdown table.
+- Show `caf list` output verbatim in a fenced code block. Do not truncate, summarize, or
+  convert it into a Markdown table; explain it afterward in the user's language.
