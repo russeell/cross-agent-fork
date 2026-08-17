@@ -108,6 +108,14 @@ class CliTest(unittest.TestCase):
         self.assertIn("cc:00000000", out)
         self.assertIn("codex:019e0000", out)
 
+    def test_list_table_has_no_row_numbers(self):
+        """Stable-column table: identifiers leftmost, no '1.' prefix (chat Markdown safety)."""
+        code, out = _run(["list"])
+        self.assertEqual(code, 0)
+        self.assertNotIn("1. codex:", out)
+        self.assertIn("Session", out)  # header without '#'
+        self.assertIn("  codex:019e0000", out)
+
     def test_list_limit_footer(self):
         import caf.cli as cli_mod
         old = cli_mod._stdout_isatty

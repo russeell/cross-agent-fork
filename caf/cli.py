@@ -109,15 +109,21 @@ def _stdout_isatty() -> bool:
     return sys.stdout.isatty()
 
 
-def _render_table(rows: list[SessionMeta], current_cwd: str, show_marker: bool = False) -> None:
-    print(f"  {'#':>2}  {_pad(_t('Session', '会话'), 20)}{_pad(_t('Title', '标题'), 36)}"
+def _render_table(rows: list[SessionMeta], current_cwd: str, show_marker: bool = False,
+                  numbered: bool = False) -> None:
+    """Stable-column table (gh/kubectl style): identifiers leftmost, no row numbers
+    (numbered only for interactive pickers; a '1.' prefix would be rendered as a
+    Markdown ordered list by chat clients)."""
+    head = f"  {'#':>2}  " if numbered else "  "
+    print(head + f"{_pad(_t('Session', '会话'), 20)}{_pad(_t('Title', '标题'), 36)}"
           f"{_t('Turns', '轮'):>4}  {_t('Time', '时间')}")
     for i, m in enumerate(rows, 1):
         title = _pad(truncate(m.title) or _t("(untitled)", "(无标题)"), 36)
         sid = _pad(f"{m.provider_id}:{m.session_id[:12]}", 20)
         marker = (_t("  <- current project", "  ← 当前项目")
                   if (show_marker and m.project_dir == current_cwd) else "")
-        print(f"  {i:>2}. {sid}{title}{m.turns:>4}  "
+        prefix = f"  {i:>2}. " if numbered else "  "
+        print(f"{prefix}{sid}{title}{m.turns:>4}  "
               f"{_human_time(m.last_active_at):<9}{marker}")
 
 
@@ -260,7 +266,7 @@ def _fork_interactive(adapters: list[Adapter]):
                           "没有可 fork 的会话（非空且工作目录存在）"),
                         hint="caf list --all")
     shown = ordered[:LIST_LIMIT]
-    _render_table(shown, cwd, show_marker=True)
+    _render_table(shown, cwd, show_marker=True, numbered=True)
     if len(shown) < len(ordered):
         print(_t(f"  ...and {len(ordered) - LIST_LIMIT} more (search by keyword/longer prefix)",
                 f"  …还有 {len(ordered) - LIST_LIMIT} 个（输入关键词/更长前缀可搜索到）"))

@@ -7,13 +7,18 @@ caf list -s <keyword> # title search
 caf list --json       # machine-readable
 ```
 
-Columns: `# 会话 标题 轮 时间`. After the user picks a session, continue with
+Columns: `Session  Title  Turns  Time` (no row numbers — the CLI prints identifiers
+leftmost, gh/kubectl style). After the user picks a session, continue with
 `caf fork <agent>:<id> --into <target>`.
 
 **Rendering discipline (chat / desktop clients)**: do not paste raw CLI text and do not
 summarize — render the list as a **complete Markdown table** (every visible row in the table),
 then add **one** short next-step suggestion (`--all` / `--limit N` / `-s keyword`).
 Raw text is fine for real terminals only.
+
+**Why**: the CLI's plain-text columns only align in monospaced terminals; chat clients
+render CJK widths differently and may interpret a `1.` prefix as an ordered list.
+The Markdown table moves alignment to the renderer, so it is always correct.
 
 **Prohibited** (avoid repetition and fabrication):
 - Do not restate the session counts (the table and the `共 N 个` line already show them)
