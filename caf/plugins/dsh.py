@@ -42,15 +42,25 @@ def _zstd_available() -> bool:
 def _zstd_decompress(data: bytes) -> bytes:
     try:
         import zstandard as zstd
-        dctx = zstd.ZstdDecompressor()
-        try:
-            return dctx.decompress(data)
-        except zstd.ZstdError:
-            # streaming frame (no content size) -> decompressobj chunked fallback
-            dobj = dctx.decompressobj()
-            return dobj.decompress(data) + dobj.flush()
     except ImportError:
         pass
+    else:
+        dctx = zstd.ZstdDecompressor()
+        try:
+            # Frame by frame: DSH writes one frame per JSON line, and
+            # decompress() silently returns only the first frame on multi-frame input.
+            out = bytearray()
+            pos = 0
+            while pos < len(data):
+                dobj = dctx.decompressobj()
+                out += dobj.decompress(data[pos:])
+                consumed = len(data) - pos - len(dobj.unused_data)
+                if consumed <= 0:
+                    raise zstd.ZstdError("no frame progress")
+                pos += consumed
+            return bytes(out)
+        except zstd.ZstdError:
+            pass  # malformed frame -> fall through to the CLI
     proc = subprocess.run(["zstd", "-d", "-c"], input=data, capture_output=True)
     if proc.returncode != 0:
         raise CafxError(_t("zstd decompression failed", "zstd 解压失败"),
@@ -59,18 +69,24 @@ def _zstd_decompress(data: bytes) -> bytes:
     return proc.stdout
 
 
-def _zstd_compress(data: bytes) -> bytes:
+def _zstd_compress_frames(chunks: list[bytes]) -> bytes:
+    """Compress each chunk as its own zstd frame (DSH stores one frame per JSON line;
+    a single frame holding the whole log is rejected by its reader)."""
     try:
         import zstandard as zstd
-        return zstd.ZstdCompressor().compress(data)
+        cctx = zstd.ZstdCompressor()
+        return b"".join(cctx.compress(c) for c in chunks)
     except ImportError:
         pass
-    proc = subprocess.run(["zstd", "-q", "-c"], input=data, capture_output=True)
-    if proc.returncode != 0:
-        raise CafxError(_t("zstd compression failed", "zstd 压缩失败"),
-                        hint=_t("pip install zstandard (or brew install zstd)",
-                               "pip install zstandard 或 brew install zstd"))
-    return proc.stdout
+    out = b""
+    for chunk in chunks:
+        proc = subprocess.run(["zstd", "-q", "-c"], input=chunk, capture_output=True)
+        if proc.returncode != 0:
+            raise CafxError(_t("zstd compression failed", "zstd 压缩失败"),
+                            hint=_t("pip install zstandard (or brew install zstd)",
+                                   "pip install zstandard 或 brew install zstd"))
+        out += proc.stdout
+    return out
 
 
 def _project_key(cwd: str) -> str:
@@ -312,7 +328,8 @@ class DshAdapter(Adapter):
         target_dir.mkdir(parents=True, exist_ok=True)
         path = target_dir / "session.jsonl.zstd"
         tmp = path.with_suffix(".tmp")
-        tmp.write_bytes(_zstd_compress(("\n".join(lines) + "\n").encode("utf-8")))
+        frames = [(line + "\n").encode("utf-8") for line in lines]  # one frame per JSON line
+        tmp.write_bytes(_zstd_compress_frames(frames))
         os.replace(tmp, path)
 
         if self._meta_from_log(path, sid) is None:

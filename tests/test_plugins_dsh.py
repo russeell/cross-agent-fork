@@ -106,6 +106,41 @@ class DshPluginTest(unittest.TestCase):
         self.assertTrue(list(written.glob("--tmp-~4E2D~6587~9879~76EE--/session-*")) or
                         list(written.glob("--tmp-*/session-*")))
 
+    def test_write_one_frame_per_line(self):
+        """DSH stores one zstd frame per JSON line; a single-frame log is rejected."""
+        import zstandard as zstd
+
+        adapter = DshAdapter()
+        ir = SessionIR(
+            SessionMeta("cc", "9f3a12", project_dir="/tmp/fixture-proj"),
+            [Turn(1, "user", "u1"), Turn(2, "assistant", "a1")],
+        )
+        sid = adapter.write(ir)
+        path = next(Path(os.environ["CAF_DSH_SESSIONS"]).rglob(f"{sid}/session.jsonl.zstd"))
+        data = path.read_bytes()
+
+        dctx = zstd.ZstdDecompressor()
+        pos, payloads = 0, []
+        while pos < len(data):
+            dobj = dctx.decompressobj()
+            payloads.append(dobj.decompress(data[pos:]))
+            consumed = len(data) - pos - len(dobj.unused_data)
+            self.assertGreater(consumed, 0)
+            pos += consumed
+        self.assertEqual(len(payloads), 5)  # header + turn/start + user + assistant + turn/end
+        self.assertTrue(all(p.endswith(b"\n") and len(p.strip()) for p in payloads))
+        self.assertIn(b'"type": "session"', payloads[0])
+
+    def test_read_single_frame_still_compatible(self):
+        """Old single-frame logs (pre-frame-per-line dsh) must still decompress."""
+        from caf.plugins.dsh import _zstd_compress_frames, _zstd_decompress
+        import zstandard as zstd
+
+        raw = b'{"type":"session","version":0,"id":"session-x"}\n{"type":"turn/start","seq":1}\n'
+        single = zstd.ZstdCompressor().compress(raw)
+        self.assertEqual(_zstd_decompress(single), raw)
+        self.assertEqual(_zstd_compress_frames([raw]), single)  # one chunk -> one frame
+
     def test_write_multi_assistant_single_turn_end(self):
         """One user turn with several assistant segments -> exactly one turn/end."""
         from caf.plugins.dsh import _zstd_decompress
