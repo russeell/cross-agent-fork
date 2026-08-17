@@ -1,4 +1,4 @@
-"""Core unit tests: ref resolution, session detection, atomic writes, utilities."""
+"""Core unit tests: ref resolution, deterministic source pick, atomic writes, utilities."""
 
 import os
 import tempfile
@@ -8,12 +8,14 @@ from pathlib import Path
 from caf.core import (
     CafxError,
     SessionMeta,
+    ToolSummary,
     Turn,
     atomic_write,
     encode_cwd,
     parse_session_ref,
     pick_recent_session,
     slice_turns,
+    with_tool_lines,
 )
 
 
@@ -72,6 +74,28 @@ class CoreTest(unittest.TestCase):
         other = SessionMeta("codex", "b", turns=1, project_dir="/elsewhere", last_active_at=999)
         picked = pick_recent_session([FakeAdapter([here, other])], project_dir=os.getcwd())
         self.assertEqual(picked.session_id, "a")
+
+    def test_pick_recent_unknown_cwd_never_counts_as_current_project(self):
+        """A session with project_dir=None must not win the current-directory pick."""
+        unknown = SessionMeta("cc", "a", turns=1, project_dir=None, last_active_at=999)
+        picked = pick_recent_session([FakeAdapter([unknown])], project_dir=os.getcwd())
+        self.assertIsNone(picked)
+
+    def test_parse_ref_bare_id_ambiguous_across_agents(self):
+        """A bare id matching sessions in several adapters must error, not pick the first."""
+        adapters = [
+            FakeAdapter([SessionMeta("cc", "abc123", last_active_at=1)]),
+            FakeAdapter([SessionMeta("codex", "abc456", last_active_at=1)]),
+        ]
+        with self.assertRaises(CafxError):
+            parse_session_ref("abc", adapters)
+
+    def test_with_tool_lines_is_language_independent(self):
+        """Envelope text must stay canonical English even under zh UI language."""
+        from caf.i18n import set_lang
+        set_lang("zh")
+        text = with_tool_lines("", [ToolSummary("edit_file", "ok", "src/auth.py")])
+        self.assertEqual(text, "[tool] edit_file · ok · src/auth.py")
 
     def test_pick_recent_skips_empty(self):
         empty = SessionMeta("cc", "a", turns=0, last_active_at=999)

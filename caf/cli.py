@@ -23,8 +23,9 @@ from caf.core import (
 )
 
 
-def installed_adapters() -> list[Adapter]:
-    return [a for a in discover_adapters() if a.detect()]
+def read_adapters() -> list[Adapter]:
+    """Adapters that can serve as a fork source (read side available)."""
+    return [a for a in discover_adapters() if a.read_ready()]
 
 
 def _scan(adapter: Adapter) -> list[SessionMeta]:
@@ -120,12 +121,6 @@ def _render_table(rows: list[SessionMeta], current_cwd: str, show_marker: bool =
               f"{_human_time(m.last_active_at):<9}{marker}")
 
 
-def _matches_agent(meta: SessionMeta, name: str) -> bool:
-    """Agent matching: accepts prefixes (cc/codex) or display names (claude/codex)."""
-    aliases = {"cc": {"cc", "claude"}, "codex": {"codex"}}
-    return name in aliases.get(meta.provider_id, {meta.provider_id})
-
-
 def _turn_stats(turns) -> tuple[int, int]:
     """(user turns, total items) — 'turns' always means user messages, consistent with list and --at."""
     users = sum(1 for t in turns if t.role == "user")
@@ -184,7 +179,7 @@ def _pick_session(rows: list[SessionMeta], raw: str) -> SessionMeta:
 
 def _resolve_source(adapters: list[Adapter], ref: str | None, into: str | None = None):
     """ref -> (adapter, meta); without ref: deterministic — current cwd first,
-    then any agent's most recent; never the target agent."""
+    then any read-ready agent's most recent; never the target agent."""
     if ref:
         agent_id, sid = parse_session_ref(ref, adapters)
         adapter = get_adapter(adapters, agent_id)
@@ -197,20 +192,27 @@ def _resolve_source(adapters: list[Adapter], ref: str | None, into: str | None =
                               f"未找到会话 {agent_id}:{sid}"), hint="caf list --all")
         return adapter, meta
 
-    others = [a for a in adapters if a.agent_id != into]
-    recent = pick_recent_session(others, project_dir=os.getcwd())
+    exclude = get_adapter(adapters, into).agent_id if into else None  # canonical alias (claude -> cc)
+    candidates = [a for a in adapters if a.read_ready() and a.agent_id != exclude]
+    recent = pick_recent_session(candidates, project_dir=os.getcwd())
     if recent:
-        return get_adapter(others, recent.provider_id), recent
-    recent = pick_recent_session(others)
+        return get_adapter(candidates, recent.provider_id), recent
+    recent = pick_recent_session(candidates)
     if recent:
-        return get_adapter(others, recent.provider_id), recent
+        return get_adapter(candidates, recent.provider_id), recent
     raise CafxError(_t("No forkable session found", "未找到可 fork 的会话"), hint="caf list --all")
 
 
 def _resolve_target(adapters: list[Adapter], source_meta: SessionMeta, into: str | None) -> Adapter:
-    others = [a for a in adapters if a.agent_id != source_meta.provider_id]
+    others = [a for a in adapters if a.write_ready() and a.agent_id != source_meta.provider_id]
     if into:
         target = get_adapter(adapters, into)
+        if not target.write_ready():
+            raise CafxError(
+                _t(f"{into} cannot receive forks (write side unavailable)",
+                  f"{into} 暂不能接收 fork（写侧不可用）"),
+                hint=_t("Run caf doctor for install hints", "运行 caf doctor 查看安装提示"),
+            )
         if target.agent_id == source_meta.provider_id:
             raise CafxError(
                 _t("Source and target agents must be different",
@@ -236,15 +238,20 @@ def _resolve_target(adapters: list[Adapter], source_meta: SessionMeta, into: str
         print(f"  {i}. {a.agent_id}")
     idx = _pick(_t("> target agent: ", "> 目标 agent: "), "1")
     try:
-        return others[int(idx) - 1]
+        n = int(idx)
+        if not 1 <= n <= len(others):
+            raise IndexError
+        return others[n - 1]
     except (ValueError, IndexError):
         raise CafxError(_t(f"Invalid choice: {idx}", f"无效选择: {idx}"))
 
 
 def _fork_interactive(adapters: list[Adapter]):
-    print(_discovery_line(adapters))
+    readable = [a for a in adapters if a.read_ready()]
+    print(_discovery_line(readable))
     cwd = os.getcwd()
-    usable = sorted(_usable_sessions(adapters), key=lambda m: m.last_active_at, reverse=True)
+    usable = sorted(_usable_sessions(readable),
+                    key=lambda m: m.last_active_at, reverse=True)
     here = [m for m in usable if m.project_dir == cwd]
     others = [m for m in usable if m.project_dir != cwd]
     ordered = here + others
@@ -284,8 +291,8 @@ def _all_sessions(adapters: list[Adapter]) -> list[SessionMeta]:
 
 
 def cmd_fork(args) -> int:
-    adapters = installed_adapters()
-    if not adapters:
+    adapters = discover_adapters()
+    if not any(a.read_ready() or a.write_ready() for a in adapters):
         raise CafxError(_t("No supported agents found", "未发现任何受支持的 agent"),
                         hint=_t("Install Claude Code or Codex first", "安装 Claude Code 或 Codex 后再试"))
 
@@ -315,7 +322,7 @@ def cmd_fork(args) -> int:
             raise CafxError(_t("Nothing to fork", "没有可 fork 的轮次"))
         fork_note = f" @{args.at}"
 
-    if target_name == "codex" and source_meta.project_dir and not os.path.isdir(source_meta.project_dir):
+    if source_meta.project_dir and not os.path.isdir(source_meta.project_dir):
         raise CafxError(
             _t(f"Source session working directory does not exist: {source_meta.project_dir}",
               f"源会话的工作目录不存在: {source_meta.project_dir}"),
@@ -371,13 +378,14 @@ def cmd_fork(args) -> int:
 # ---------------------------------------------------------------- list
 
 def cmd_list(args) -> int:
-    adapters = installed_adapters()
+    adapters = read_adapters()
     rows = _all_sessions(adapters)
     agent = args.agent or args.agent_ref or (
         "claude" if args.claude else ("codex" if args.codex else None)
     )
     if agent:
-        rows = [m for m in rows if _matches_agent(m, agent)]
+        target = get_adapter(adapters, agent)
+        rows = [m for m in rows if m.provider_id == target.agent_id]
     if args.search:
         kw = args.search.lower()
         rows = [m for m in rows if kw in m.title.lower()]
@@ -497,7 +505,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_fork = sub.add_parser("fork", help="Fork a source session into a target agent")
     p_fork.add_argument("ref", nargs="?", help="Source session (cc:last / codex:<id>); "
-                                               "defaults to the active session")
+                                               "defaults to the most recent session in the current directory")
     p_fork.add_argument("--at", type=int, help="Fork point: user-message sequence "
                                                "(default = last completed turn)")
     bound = p_fork.add_mutually_exclusive_group()

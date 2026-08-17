@@ -56,7 +56,7 @@ cc:last             # 该 agent 最近会话（当前项目）
 | 层 | 内容 |
 |---|---|
 | 保留 | 全部文本轮次（用户/助手）、cwd、可恢复的线程身份 |
-| 折叠 | 工具调用 → 摘要行（名称 + 状态 + 文件） |
+| 折叠 | 工具调用 → 摘要行（名称 + 状态 + 文件）；摘要行永远 canonical 英文 `[tool]`，与 CLI 界面语言无关（i18n 只存在于 presentation layer，绝不改变迁移内容） |
 | 不搬 | 配置（plugins/MCP/hooks/subagents）、权限/环境、附件、子代理、工作区/git 状态 |
 
 理由：与 codex-plugin-cc 一致（它也是 `plugins: []` 全空）；文件系统共享，目标可自读自跑；授权重置是各 agent 的安全设计。
@@ -169,8 +169,10 @@ class Adapter:
     agent_id: str                   # 会话引用前缀，如 cc / codex / dsh
     display_name: str               # 展示名，如 claude / codex
     install_hint: str               # 未安装时 doctor 给出的安装提示
-    def detect(self) -> bool                    # 是否安装
-    def write_ready(self) -> bool               # 写侧是否可用（默认 = 已安装）
+    def detect(self) -> bool                    # 是否安装（默认 read_ready = detect）
+    def read_ready(self) -> bool                # 读侧可用 → fork 源候选
+    def write_ready(self) -> bool               # 写侧可用 → fork 目标候选（如 Claude 只需 CLI 存在）
+    def matches(self, name) -> bool             # agent_id / display_name 统一别名匹配（claude == cc）
     def store_path(self) -> str                 # doctor 展示的实际存储路径
     def store_version(self) -> str              # 未知版本 → 明确报错
     def scan_sessions(self) -> list[SessionMeta]
@@ -226,8 +228,8 @@ class Adapter:
 ## 10. v0.2 候选
 
 - ~~`--at` 任意边界分叉~~ —— 已实现（v0.1.1）：IR 截断 + 镜像桥，所有方向生效
-- ~~谱系记录 + `caf tree`~~ —— 已实现（v0.2）：读原生父字段（codex parent_thread_id / dsh parentSession），ASCII + `--json`
-- ~~`caf mcp`~~ —— 已实现（v0.2）：stdio JSON-RPC（纯 stdlib），工具 caf_list / caf_fork / caf_tree / caf_doctor
+- ~~谱系记录 + `caf tree`~~ —— 已实现（v0.2）：读原生父字段（codex parent_thread_id / dsh parentSession），ASCII + `--json`；**best-effort 承诺**——只读各 agent 原生元数据，绝不为它建立 CAF 自己的 lineage 数据库
+- ~~`caf mcp`~~ —— 已实现（v0.2）：**legacy 协议** stdio JSON-RPC（纯 stdlib，不追 2026-era MCP spec、不引 SDK），工具 caf_list / caf_fork / caf_tree / caf_doctor；等真实桌面客户端需要时再评估 `server/discover`
 - ~~DeepSeek Harness 插件~~ —— 已实现（v0.2）：首个社区插件（zstd JSONL）
 - ~~双语输出~~ —— 已实现（v0.2）：`--lang` / `CAF_LANG` / 系统语言跟随
 - ~~命令级扫描缓存~~ —— 已实现（v0.2）：`scan_cached`，每命令每 adapter 只扫一次
@@ -282,7 +284,7 @@ cross-agent-fork/
 |---|---|---|
 | 终端 | CLI 本身（fork/list/doctor/tree） | v0.1 |
 | Skills | per-agent SKILL.md，agent 隐式触发「对话即入口」 | v0.1（零代码） |
-| MCP | `caf mcp`，桌面/聊天客户端原生调用 | v0.2 ✅ |
+| MCP | `caf mcp`（legacy 协议），MCP 客户端调用 | v0.2 ✅ |
 
 Skills 工作流（§12.1 详见）：
 

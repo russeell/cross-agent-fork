@@ -13,6 +13,7 @@ from typing import Optional
 from uuid import uuid4
 
 from caf._rpc import RpcClient
+from caf import __version__
 from caf.adapters import Adapter
 from caf.i18n import t as _t
 from caf.core import CafxError, SessionIR, SessionMeta, Turn, atomic_write, read_jsonl
@@ -259,12 +260,12 @@ class CodexAdapter(Adapter):
         try:
             out = subprocess.run(["codex", "--version"], capture_output=True,
                                  text=True, timeout=5).stdout.strip()
-            return out.split()[0] if out else ""
+            return out.split()[-1] if out else ""  # "codex-cli 0.144.0" -> "0.144.0"
         except Exception:
             return ""
 
     def write_ready(self) -> bool:
-        return self.detect() and _codex_bin() is not None
+        return _codex_bin() is not None
 
     def store_path(self) -> str:
         return "~/.codex"
@@ -397,7 +398,7 @@ def import_external_session(source_path: str, cwd: str, timeout_s: int = IMPORT_
     )
     rpc = RpcClient(proc)
     try:
-        rpc.call(1, "initialize", {"clientInfo": {"name": "caf", "version": "0.1.0"}})
+        rpc.call(1, "initialize", {"clientInfo": {"name": "caf", "version": __version__}})
         rpc.notify("initialized")
         params = {
             "source": "caf",

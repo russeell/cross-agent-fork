@@ -17,9 +17,17 @@ class Adapter:
     def detect(self) -> bool:
         raise NotImplementedError
 
-    def write_ready(self) -> bool:
-        """Whether the write side is usable (default = installed)."""
+    def read_ready(self) -> bool:
+        """Whether sessions can be read (source candidates; default = installed store exists)."""
         return self.detect()
+
+    def write_ready(self) -> bool:
+        """Whether the agent can receive a fork (target candidates; default = installed)."""
+        return self.detect()
+
+    def matches(self, name: str) -> bool:
+        """Agent name matching: agent_id ("cc" / "dsh") or display_name ("claude" / "deepseek-harness")."""
+        return name in (self.agent_id, self.display_name)
 
     def store_path(self) -> str:
         """Storage path shown by doctor."""
@@ -72,7 +80,7 @@ class Adapter:
 
 def get_adapter(adapters: list[Adapter], agent_id: str) -> Adapter:
     for adapter in adapters:
-        if adapter.agent_id == agent_id or adapter.display_name == agent_id:
+        if adapter.matches(agent_id):
             return adapter
     raise CafxError(f"Unsupported agent: {agent_id}", hint="caf doctor")
 

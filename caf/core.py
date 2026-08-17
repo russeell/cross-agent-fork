@@ -1,4 +1,4 @@
-"""Core: session models, ref resolution, active-session detection, atomic writes."""
+"""Core: session models, ref resolution, deterministic source pick, atomic writes."""
 
 from __future__ import annotations
 
@@ -116,13 +116,24 @@ def encode_cwd(path: str) -> str:
 
 
 def parse_session_ref(ref: str, adapters) -> tuple[str, str]:
-    """'cc:9f3a' / 'codex:last' -> (agent_id, sid); bare ids auto-detect the owner."""
+    """'cc:9f3a' / 'codex:last' -> (agent_id, sid); bare ids auto-detect the owner (ambiguity -> error)."""
     if ":" in ref:
         agent, _, sid = ref.partition(":")
         return agent, sid
+    found = []
     for adapter in adapters:
+        ready = getattr(adapter, "read_ready", None)
+        if ready is not None and not ready():
+            continue  # only probe adapters that can actually read sessions
         if adapter.find_session(ref):
-            return adapter.agent_id, ref
+            found.append(adapter)
+    if len(found) > 1:
+        raise CafxError(
+            _t(f"Session id {ref} matches multiple agents", f"会话 id {ref} 匹配到多个 agent"),
+            hint=_t("Use the agent: prefix (e.g. cc:<id>)", "请带 agent 前缀（如 cc:<id>）"),
+        )
+    if found:
+        return found[0].agent_id, ref
     raise CafxError(_t(f"Session not found: {ref}", f"未找到会话 {ref}"), hint="caf list --all")
 
 
@@ -137,7 +148,7 @@ def pick_recent_session(adapters, project_dir: Optional[str] = None) -> Optional
             if meta.project_dir and not os.path.isdir(meta.project_dir):
                 continue  # sessions whose working directory is gone cannot be forked
                           # (the official importer requires cwd)
-            if project_dir and meta.project_dir and meta.project_dir != project_dir:
+            if project_dir is not None and meta.project_dir != project_dir:
                 continue
             if best is None or meta.last_active_at > best.last_active_at:
                 best = meta
@@ -200,9 +211,13 @@ def _empty_slice(at: int, boundary: str):
 
 
 def with_tool_lines(text: str, tools: list[ToolSummary]) -> str:
-    """Append tool summaries to a turn's text as one line per tool."""
+    """Append tool summaries to a turn's text as one line per tool.
+
+    Canonical English tokens only: this text is written into the migrated session,
+    so it must never depend on the CLI's UI language (i18n stays in the presentation layer).
+    """
     for tool in tools:
-        line = f"[{_t('tool', '工具')}] {tool.name} · {tool.status}"
+        line = f"[tool] {tool.name} · {tool.status}"
         if tool.file:
             line += f" · {tool.file}"
         text = f"{text}\n{line}" if text else line

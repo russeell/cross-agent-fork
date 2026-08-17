@@ -106,6 +106,35 @@ class DshPluginTest(unittest.TestCase):
         self.assertTrue(list(written.glob("--tmp-~4E2D~6587~9879~76EE--/session-*")) or
                         list(written.glob("--tmp-*/session-*")))
 
+    def test_write_multi_assistant_single_turn_end(self):
+        """One user turn with several assistant segments -> exactly one turn/end."""
+        from caf.plugins.dsh import _zstd_decompress
+
+        adapter = DshAdapter()
+        ir = SessionIR(
+            SessionMeta("cc", "9f3a12", project_dir="/tmp/fixture-proj"),
+            [
+                Turn(1, "user", "u1"),
+                Turn(2, "assistant", "a1"),
+                Turn(3, "assistant", "a2"),
+                Turn(4, "user", "u2"),
+                Turn(5, "assistant", "a3"),
+            ],
+        )
+        sid = adapter.write(ir)
+        path = next((Path(os.environ["CAF_DSH_SESSIONS"]).rglob(f"{sid}/session.jsonl.zstd")))
+        import json
+        lines = [line for line in _zstd_decompress(path.read_bytes()).decode().splitlines()
+                 if line.strip()]
+        events = [json.loads(line) for line in lines]
+        types = [e["type"] for e in events]
+        self.assertEqual(types.count("turn/start"), 2)
+        self.assertEqual(types.count("turn/end"), 2)
+        self.assertEqual(types.count("assistant/message"), 3)
+        self.assertEqual(types.count("user/message"), 2)
+        # each turn opens once and closes once; assistant segments stay inside their turn
+        self.assertLess(types.index("assistant/message"), types.index("turn/end"))
+
 
 if __name__ == "__main__":
     unittest.main()

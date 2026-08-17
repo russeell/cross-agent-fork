@@ -114,6 +114,10 @@ class ClaudeAdapter(Adapter):
     def detect(self) -> bool:
         return _projects_dir().is_dir()
 
+    def write_ready(self) -> bool:
+        """Writing creates the store (mkdir), but resume needs the CLI installed."""
+        return shutil.which("claude") is not None
+
     def store_version(self) -> str:
         return _cc_version_probe()
 

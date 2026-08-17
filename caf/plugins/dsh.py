@@ -127,6 +127,10 @@ class DshAdapter(Adapter):
     def detect(self) -> bool:
         return _root().is_dir() and _zstd_available()
 
+    def write_ready(self) -> bool:
+        """Writing creates the store (mkdir); only zstd is needed."""
+        return _zstd_available()
+
     def store_version(self) -> str:
         return ""  # session format version != product version; do not fake one
 
@@ -257,9 +261,16 @@ class DshAdapter(Adapter):
         seq = 1
         turn = 0
         first_user_seq: Optional[int] = None
+        turn_open = False
         for t in ir.turns:
             if t.role == "user":
+                if turn_open:
+                    # close the previous turn first (multi-part input / consecutive users)
+                    events.append({"type": "turn/end", "seq": seq, "time": now_ms,
+                                   "data": {"turn": turn, "reason": {"kind": "completed"}}})
+                    seq += 1
                 turn += 1
+                turn_open = True
                 events.append({"type": "turn/start", "seq": seq, "time": now_ms, "data": {"turn": turn}})
                 seq += 1
                 if first_user_seq is None:
@@ -279,9 +290,10 @@ class DshAdapter(Adapter):
                                             "source": {"kind": "model", "provider": "caf",
                                                        "model": "cross-agent-fork"}}}})
                 seq += 1
-                events.append({"type": "turn/end", "seq": seq, "time": now_ms,
-                               "data": {"turn": turn, "reason": {"kind": "completed"}}})
-                seq += 1
+        if turn_open:
+            events.append({"type": "turn/end", "seq": seq, "time": now_ms,
+                           "data": {"turn": turn, "reason": {"kind": "completed"}}})
+            seq += 1
 
         header = {"type": "session", "version": 0, "id": sid, "createdAt": now_ms,
                   "cwd": cwd, "delegationDepth": 0, "agentPreset": "standard",

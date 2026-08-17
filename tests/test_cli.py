@@ -224,6 +224,44 @@ class CliTest(unittest.TestCase):
                 cli_mod._pick_session(rows, bad)
         self.assertEqual(cli_mod._pick_session(rows, "2").session_id, "s2")
 
+    def test_fork_into_alias_excludes_canonical_agent(self):
+        """--into claude must exclude agent_id "cc" from source candidates."""
+        code, out = _run(["fork", "--into", "claude", "--dry-run"])
+        self.assertEqual(code, 0)
+        self.assertIn("Preview: codex:019e0000", out)  # cc excluded as target -> codex source
+        self.assertIn("claude --resume <new-id>", out)
+
+    def test_fork_target_works_without_read_store(self):
+        """A freshly installed agent (no read store yet) can still be a fork target."""
+        from unittest import mock
+        with mock.patch("caf.adapters.claude.shutil.which", return_value="/usr/bin/claude"):
+            code, out = _run(
+                ["fork", "codex:019e0000", "--into", "claude", "--dry-run"],
+                env_overrides={"CAF_CC_PROJECTS": str(Path(self.tmp) / "no-cc-store")},
+            )
+        self.assertEqual(code, 0)
+        self.assertIn("claude --resume <new-id>", out)
+
+    def test_resolve_target_skips_write_unavailable(self):
+        """Target candidates must be write_ready; a read-only adapter is not offered."""
+        import caf.cli as cli_mod
+        from caf.adapters import Adapter
+        from caf.core import SessionMeta
+
+        class ReadOnly(Adapter):
+            agent_id = "ro"
+            def write_ready(self):
+                return False
+
+        class Writable(Adapter):
+            agent_id = "wr"
+            def write_ready(self):
+                return True
+
+        src = SessionMeta("cc", "s1")
+        target = cli_mod._resolve_target([ReadOnly(), Writable()], src, None)
+        self.assertEqual(target.agent_id, "wr")
+
     def test_fork_unknown_session(self):
         code, out = _run(["fork", "cc:zzzz", "--into", "codex"])
         self.assertEqual(code, 1)
@@ -313,7 +351,7 @@ class CliTest(unittest.TestCase):
         """Interactive mode: id-prefix source pick -> confirm -> dry-run (stdin + isatty injection)."""
         import caf.cli as cli_mod
 
-        feed = io.StringIO("019e0000\n\n")
+        feed = io.StringIO("019e0000\n1\n\n")  # source pick, target pick (claude), confirm
         out = io.StringIO()
         old_stdin, old_isatty = sys.stdin, cli_mod._stdin_isatty
         sys.stdin = feed

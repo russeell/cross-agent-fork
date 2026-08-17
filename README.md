@@ -4,7 +4,7 @@
 
 > The cross-agent version of your agent's built-in fork: take a whole session from one agent, continue it in another — original untouched.
 
-`caf` turns session A's **entire conversation + working directory + resumable identity** into a native, resumable session inside agent B. Switch between Claude Code, Codex, and DeepSeek Harness without losing context, copying summaries, or re-explaining anything.
+`caf` carries session A's **conversation history, working directory, and essential tool summaries** into a native, resumable session inside agent B. Switch between Claude Code, Codex, and DeepSeek Harness without re-explaining anything.
 
 ## Supported agents
 
@@ -20,10 +20,10 @@ Three-tier commitment (inspired by superpowers / agent-reach):
 
 ### DeepSeek Harness plugin
 
-DSH sessions are zstd-compressed JSONL, supported via the first community plugin (`caf/plugins/dsh.py`). Requires zstd support:
+DSH sessions are zstd-compressed JSONL, supported via the first bundled community plugin (`caf/plugins/dsh.py`):
 
 ```bash
-pip install zstandard          # or: brew install zstd
+pipx install "cross-agent-fork[dsh]"   # or: pip install zstandard / brew install zstd
 caf fork cc:last --into dsh    # Claude Code → DSH
 caf fork dsh:last --into claude  # DSH → Claude Code
 caf fork dsh:last --into codex # DSH → Codex (any source → CC mirror → official import)
@@ -51,7 +51,7 @@ Every fork ends with a **paste-ready resume command**:
 
 ## What it solves
 
-- Stuck mid-task in Claude Code and want to switch to Codex? **The full context comes with you.**
+- Stuck mid-task in Claude Code and want to switch to Codex? **The conversation context comes with you.**
 - Working in a desktop client (Codex Desktop, Claude Code, …)? Since v0.2 `caf mcp` gives any MCP client a conversation-level entry point.
 - Sessions scattered across `~/.claude/projects/`, `~/.codex/sessions/`, `~/.dsh/sessions/`, impossible to find or resume? `caf list` unifies them.
 
@@ -66,7 +66,7 @@ Every fork ends with a **paste-ready resume command**:
 
 ## Use it inside your agent (skills)
 
-Copy `skills/caf/` into your agent (Codex: `cp -r skills/caf ~/.agents/skills/`), then just say:
+From a repository checkout, copy `skills/caf/` into your agent (Codex: `cp -r skills/caf ~/.agents/skills/`), then just say:
 
 > Fork the current session into Codex.
 
@@ -74,9 +74,9 @@ The agent calls `caf` for you — no session ids to remember. The skill is Engli
 
 ## Design principles
 
-- **Reuse first** — CC→Codex uses the official import API (same mechanism as codex-plugin-cc); no duplicate format translation.
+- **Native first** — use official import APIs when available (CC→Codex via the same mechanism as codex-plugin-cc); otherwise keep each adapter's envelope translation thin and local.
 - **Minimal** — one core action (fork), a few support commands, zero runtime dependencies.
-- **Elegant** — the only hand-written format translation is the Codex→CC envelope (~250 lines).
+- **Elegant** — one canonical IR; adapters stay thin readers/writers.
 - **Practical** — every feature maps to a real scenario; no demo features.
 - **Convenient** — zero config, deterministic source pick (current directory first), interactive fallback, output always ends with a copyable command.
 
@@ -89,7 +89,7 @@ caf CLI (fork / list / doctor / tree / mcp)
 ├─ claude adapter: read CC · write CC (file-level envelope)
 ├─ codex adapter: read Codex · write via official import API
 ├─ plugins/dsh: DeepSeek Harness (zstd JSONL) — first community plugin
-├─ tree: cross-agent lineage · mcp: stdio MCP server · i18n: en/zh
+├─ tree: best-effort lineage from native metadata · mcp: stdio MCP server (legacy protocol) · i18n: en/zh
 ```
 
 Data flow:
@@ -105,7 +105,7 @@ caf fork codex:01J7 --into cc
 ## Roadmap
 
 - **v0.1** — `fork / list / doctor`; Claude Code ↔ Codex; whole session; rollback; interactive mode; caf skill
-- **v0.2** (current) — ✅ `--at` boundary forks, ✅ `caf tree` lineage, ✅ `caf mcp`, ✅ DeepSeek Harness plugin, ✅ bilingual output; next: skills marketplace packaging, opencode/Gemini write side (needs real-machine verification), `curl | bash` installer
+- **v0.2** (current) — ✅ `--at` boundary forks, ✅ `caf tree` (best-effort lineage), ✅ `caf mcp` (legacy protocol), ✅ DeepSeek Harness plugin, ✅ bilingual output; next: skills marketplace packaging, opencode/Gemini write side (needs real-machine verification), `curl | bash` installer
 - **v0.3** — write side: Cursor; read side: T2 agents visible in list/doctor
 - **v0.4+** — write side: Grok / Cline / Aider / Kimi; T3 community-driven
 - **Non-goals** — TUI/GUI, same-agent forks (use the native one), subagent forks, config migration, cloud sync

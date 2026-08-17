@@ -4,7 +4,7 @@
 
 > agent 内置 fork 的跨 agent 版：把一个 agent 里的整个会话，变成另一个 agent 里可恢复的会话线——原会话不动。
 
-`caf` 把 A 会话的**全部对话 + 工作目录 + 可恢复的线程身份**，原样变成 B agent 里的原生可恢复会话。在 Claude Code、Codex、DeepSeek Harness 之间切换时，上下文完整带走，不用复制粘贴摘要、不用重新解释。
+`caf` 把 A 会话的**对话历史、工作目录、必要工具摘要**带进 B agent 里的原生可恢复会话。在 Claude Code、Codex、DeepSeek Harness 之间切换时，不用重新解释、不用复制粘贴摘要。
 
 ## 支持矩阵
 
@@ -20,10 +20,10 @@
 
 ### DeepSeek Harness 插件
 
-DSH 会话是 zstd 压缩的 JSONL，由首个社区插件（`caf/plugins/dsh.py`）支持。启用需 zstd：
+DSH 会话是 zstd 压缩的 JSONL，由首个随包发布的社区插件（`caf/plugins/dsh.py`）支持：
 
 ```bash
-pip install zstandard          # 或 brew install zstd
+pipx install "cross-agent-fork[dsh]"   # 或 pip install zstandard / brew install zstd
 caf fork cc:last --into dsh    # Claude Code → DSH
 caf fork dsh:last --into claude  # DSH → Claude Code
 caf fork dsh:last --into codex # DSH → Codex（任意源 → CC 镜像 → 官方导入）
@@ -51,7 +51,7 @@ caf doctor                           # 健康检查与修复建议
 
 ## 解决的问题
 
-- 在 Claude Code 里做到一半想换 Codex？**上下文完整带走**。
+- 在 Claude Code 里做到一半想换 Codex？**对话上下文完整带走**。
 - 在桌面客户端（Codex Desktop / Claude Code…）里换工具？v0.2 起 `caf mcp` 让任意 MCP 客户端拥有对话级入口。
 - 会话散落（`~/.claude/projects/`、`~/.codex/sessions/`、`~/.dsh/sessions/`），找不到、记不住恢复命令？`caf list` 统一呈现。
 
@@ -66,7 +66,7 @@ caf doctor                           # 健康检查与修复建议
 
 ## 在 agent 里使用（skills）
 
-把 `skills/caf/` 复制进你的 agent（Codex：`cp -r skills/caf ~/.agents/skills/`），然后直接在对话里说：
+在仓库 checkout 里把 `skills/caf/` 复制进你的 agent（Codex：`cp -r skills/caf ~/.agents/skills/`），然后直接在对话里说：
 
 > 把当前会话 fork 到 Codex
 
@@ -74,9 +74,9 @@ agent 会自动调用 caf 完成，不需要记任何会话 id。skill 指令为
 
 ## 设计原则
 
-- **复用优先** — CC→Codex 走官方导入机制（codex-plugin-cc 同款思路），不重复实现格式翻译
+- **原生优先** — 有官方 API 用官方（CC→Codex 走 codex-plugin-cc 同款机制）；没有就把每个 adapter 的信封翻译保持薄而局部
 - **简洁** — 一个核心动作（fork）+ 少量支撑命令，零运行时依赖
-- **优雅** — 唯一的手写格式翻译只有 Codex→CC 信封（~250 行）
+- **优雅** — 一个规范 IR；adapter 只做薄读写
 - **实用** — 每个功能对应真实场景，不做演示功能
 - **便捷** — 零配置、确定性源选择（当前目录优先）、交互兜底、输出永远是「可复制的一条命令」
 
@@ -89,7 +89,7 @@ caf CLI（fork / list / doctor / tree / mcp）
 ├─ claude adapter: 读 CC · 写 CC（文件级信封）
 ├─ codex adapter: 读 Codex · 写（官方 import API）
 ├─ plugins/dsh: DeepSeek Harness（zstd JSONL）— 首个社区插件
-├─ tree: 跨 agent 谱系 · mcp: stdio MCP server · i18n: 中英双语
+├─ tree: 基于原生元数据的 best-effort 谱系 · mcp: stdio MCP server（legacy 协议）· i18n: 中英双语
 ```
 
 数据流：
@@ -105,7 +105,7 @@ caf fork codex:01J7 --into cc
 ## Roadmap
 
 - **v0.1** — `fork / list / doctor`；Claude Code ↔ Codex；整会话；回滚；交互模式；caf skill
-- **v0.2**（当前）— ✅ `--at` 任意边界、✅ `caf tree` 谱系、✅ `caf mcp`、✅ DeepSeek Harness 插件、✅ 双语输出；下一步：skills marketplace 打包、opencode / gemini 写侧（需实机验证）、`curl | bash` 安装器
+- **v0.2**（当前）— ✅ `--at` 任意边界、✅ `caf tree`（best-effort 谱系）、✅ `caf mcp`（legacy 协议）、✅ DeepSeek Harness 插件、✅ 双语输出；下一步：skills marketplace 打包、opencode / gemini 写侧（需实机验证）、`curl | bash` 安装器
 - **v0.3** — 写侧：Cursor；读侧：T2 五家在 list/doctor 可见
 - **v0.4+** — 写侧：Grok / Cline / Aider / Kimi；T3 社区驱动
 - **非目标** — TUI/GUI、同 agent fork（用原生）、子代理 fork、配置迁移、云同步
