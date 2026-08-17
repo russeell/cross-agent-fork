@@ -43,6 +43,24 @@ caf fork cc:last --at 12 --into codex  # 从第 12 轮结束处 fork（前 1~12 
 
 源会话永远不会被修改。每次 fork 结束都会给出一条可直接粘贴的目标 agent 恢复命令。
 
+## 做到一半换 agent
+
+真实流程是这样的——你在 Claude Code 里做到一半，想换到 Codex：
+
+```text
+$ caf fork --into codex
+Forked: cc:9f3a... -> codex（24 轮 / 110 条消息，原会话不动）
+Written: codex thread 019abc...（官方导入）
+
+-> resume: codex resume 019abc...
+
+$ codex resume 019abc...
+> 继续刚才的任务。
+```
+
+Codex 会直接接上——它知道目标、你改过的文件、还有哪些没做完，不需要你重新解释。
+双向真实验证过：Claude Code → Codex 和 Codex → Claude Code（以及 → DeepSeek Harness）。
+
 ## 支持
 
 | Agent | 读取 | 写入 |

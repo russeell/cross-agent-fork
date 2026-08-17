@@ -45,6 +45,25 @@ caf fork cc:last --at 12 --into codex  # fork through turn 12 (turns 1-12 stay i
 The source session is never modified. Every fork ends with a paste-ready resume command
 for the target agent.
 
+## Switch agents mid-task
+
+The real flow looks like this — you are mid-task in Claude Code, need to switch to Codex:
+
+```text
+$ caf fork --into codex
+Forked: cc:9f3a... -> codex (24 user turns / 110 messages, original untouched)
+Written: codex thread 019abc... (official import)
+
+-> resume: codex resume 019abc...
+
+$ codex resume 019abc...
+> Continue where we left off.
+```
+
+Codex picks up the task — it knows the goal, the files you touched, and what was left
+open, without you re-explaining anything. Verified both ways: Claude Code → Codex and
+Codex → Claude Code (and into DeepSeek Harness).
+
 ## Supported agents
 
 | Agent | Fork from | Fork to |
