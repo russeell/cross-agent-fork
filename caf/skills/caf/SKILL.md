@@ -1,16 +1,16 @@
 ---
 name: caf
-description: Cross-agent session fork — use when the user wants to switch agents and continue work, fork the current session into another agent (Claude Code <-> Codex <-> DeepSeek Harness), escape rate limits, try a different approach, compare models, list sessions, or check cross-agent tool health. Only fork when the user explicitly asks; never fork proactively.
+description: Bring native agent fork across agent boundaries — use when the user wants to switch agents and continue work, fork this session into another agent (Claude Code <-> Codex <-> DeepSeek Harness), escape rate limits, try a different approach, compare models, list sessions, or check cross-agent tool health. Only fork when the user explicitly asks; never fork proactively.
 ---
 
-# caf — cross-agent session fork
+# caf — native agent fork across boundaries
 
-`caf` turns the session of one agent into a resumable session in another agent; the
-original session is never modified.
+`caf` creates a new native resumable session in another agent; the original session
+is never modified.
 
 ## When to use
 
-- "fork the current session to Codex / Claude Code", "switch to X and continue",
+- "fork this session to Codex / Claude Code", "switch to X and continue",
   "rate-limited, switch tools" -> fork
 - "what sessions are there" -> list
 - fork failed or "check the environment" -> doctor

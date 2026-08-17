@@ -77,7 +77,11 @@ class ClaudeAdapterTest(unittest.TestCase):
         cmd = adapter.resume_command(new_id, "/tmp/fixture-proj")
         self.assertIn("cd /tmp/fixture-proj && claude --resume", cmd)
         self.assertTrue(
-            (Path(os.environ["CAF_CC_PROJECTS"]) / "-tmp-fixture-proj" / f"{new_id}.jsonl").is_file()
+            (
+                Path(os.environ["CAF_CC_PROJECTS"])
+                / "-tmp-fixture-proj"
+                / f"{new_id}.jsonl"
+            ).is_file()
         )
 
     def test_write_creates_own_dir(self):

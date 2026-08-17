@@ -300,7 +300,7 @@ def _fork_interactive(adapters: list[Adapter]):
     src_adapter = get_adapter(adapters, chosen.provider_id)
     tgt = _resolve_target(adapters, chosen, None)
     print(
-        f"  Fork {chosen.provider_id}:{chosen.session_id[:12]} (whole session) -> {tgt.agent_id}; "
+        f"  Fork {chosen.provider_id}:{chosen.session_id[:12]} (full context) -> {tgt.agent_id}; "
         "original untouched"
     )
     if not _confirm("  [Enter to confirm / q to cancel]: "):
@@ -535,7 +535,7 @@ def cmd_install_skill(args) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="caf",
-        description="Cross-agent session fork: whole session + cwd + resumable identity, "
+        description="Bring native agent fork across agent boundaries: conversation + cwd + resumable identity, "
         "original untouched",
     )
     parser.add_argument("--version", action="version", version=f"caf {__version__}")
