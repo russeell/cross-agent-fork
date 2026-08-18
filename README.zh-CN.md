@@ -1,18 +1,14 @@
-[English](README.md) | **简体中文**
-
 # cross-agent-fork
 
-> 把 Agent 内置 fork 带到不同 Agent 之间。
+[English](README.md)
 
-Coding Agent 的内置 fork 通常只能 fork 给自己。`caf` 把这个 primitive 带到 Agent
-边界之外：基于源对话、工作目录和可移植工具证据，在目标 Agent 中创建一个新的原生
-可恢复会话。源会话保持不变。
+**把 Coding Agent 的会话 fork 到另一个 Agent。**
 
-`caf` fork 的是**会话状态，不是工作区状态**。它不会复制你的工作区：目标会话在
-**同一个工作目录**里恢复，因此它看到的本地文件、分支和未提交改动本来就在那里。
+Claude Code 只能 fork 给 Claude Code，Codex 只能 fork 给 Codex。
+CAF 把同样的 fork 带到 Agent 边界之外。
 
-当前支持 Claude Code、Codex 和 DeepSeek Harness。
-已在 macOS / Linux 验证。
+你在 Claude Code 里做到一半，想看看 Codex 会怎么继续。
+不用总结对话，不用复制粘贴上下文。Fork 它：
 
 ```bash
 caf fork --into codex
@@ -23,83 +19,82 @@ caf fork --into codex
   resume  codex resume 019...
 ```
 
+在 Codex 里继续。源会话保持不变。
+
+**Claude Code ↔ Codex CLI ↔ DeepSeek Harness**
+
+CAF fork 的是对话，不是你的文件系统。目标 Agent 在**同一个工作目录**里恢复——
+CAF 不复制 Git 或工作区状态，也不运行任何 daemon、数据库或后台服务。
+
+## 支持的 Agent
+
+| Agent | Ref |
+|---|---|
+| Claude Code | `cc` |
+| Codex CLI | `codex` |
+| DeepSeek Harness | `dsh` |
+
+六个跨 Agent 方向全部支持。
+
 ## 安装
 
 ```bash
 pipx install git+https://github.com/russeell/cross-agent-fork.git
 ```
 
-可选的 Agent skill 位于 [`caf/skills/caf/`](caf/skills/caf/)。CAF 只提供集成文件，
-不负责管理 skill 的安装生命周期。可以直接对 Agent 说：
-
-```text
-请从 https://github.com/russeell/cross-agent-fork/tree/main/caf/skills/caf
-读取并按你原生的 skill 安装方式安装 caf skill，然后确认它可用。
-```
-
-装完后直接说“把这个会话 fork 到 Codex”。skill 会传入 `<当前 Agent>:last`，避免
-CAF 在多个 Agent 之间猜源；如果能拿到精确 session ID，就应直接使用 ID。
+已在 macOS / Linux 验证。需要 Python 3.10+。
 
 ## 快速开始
 
 ```bash
-caf fork                      # 交互选择
-caf fork --into codex         # 当前项目中最近的会话 → Codex
-caf fork cc:last --into codex # 最近的 Claude Code 会话 → Codex
-caf fork cc:last --at 12 --into codex  # 从第 12 轮结束处 fork
+caf fork                          # 交互选择
+caf fork --into codex             # 把当前目录最近的会话 fork 到 Codex
+caf fork cc:last --into codex     # 最近的 Claude Code 会话 → Codex
+caf fork cc:last --at 8 --into codex   # 从更早的轮次分叉
 ```
 
-源会话永远不会被修改。每次 fork 结束都会给出一条可直接粘贴的目标 Agent 恢复命令。
-
-## 做到一半换 Agent
-
-你在 Claude Code 里做到一半，想切到 Codex：
+`--at N` 从第 N 轮处 fork——从开头到第 N 轮的内容都会带进新会话：
 
 ```text
-$ caf fork --into codex
-✓ forked  cc:9f3a... → codex:019abc...
-  resume  codex resume 019abc...
-
-$ codex resume 019abc...
-> 继续刚才的任务。
+turn 1 ── 2 ── 3 ── 4 ── 5 ── ...
+                 │
+                 └── fork → Codex
 ```
 
-目标 Agent 会得到继续这个 fork 所需的可移植对话证据。具体保留范围见下文；CAF
-不承诺迁移 Agent 配置或隐藏运行状态。
+每次 fork 都以一条可直接粘贴的目标 Agent 恢复命令结束。源会话永远不会被修改。
 
-## 支持的 Agent
-
-| Agent | Fork from | Fork to |
-|---|---|---|
-| Claude Code | ✓ | ✓ |
-| Codex | ✓ | ✓ |
-| DeepSeek Harness | ✓ | ✓ |
-
-## 其他命令
+### 辅助命令
 
 ```bash
-caf list    # 浏览各 Agent 会话（-s 关键词搜索 / --all / --limit N）
-caf doctor  # 检查每个 Agent 的读写状态
+caf list    # 浏览各 Agent 的会话（-s <关键词> 搜索、--all、--limit N）
+caf doctor  # 健康检查：各 Agent 的读取/写入状态
 ```
 
-## 从指定轮次 fork
+## Fork 带走了什么
 
-`--at N` 会精确 fork 到第 N 个用户轮次结束处，新会话只保留从开头到该轮的内容。
-如果第 N 轮尚未完成，CAF 会明确报错，不会悄悄退回上一轮。
+| | 是否带过去 |
+|---|---|
+| 对话文本 | ✓ |
+| 工具调用/结果证据 | ✓，以可读的转录文本形式 |
+| 工作目录 | 同一路径（不复制） |
+| 文件 / Git 状态 | 不复制——目标在同一个目录里恢复 |
+| Agent 配置与权限 | 否 |
+| 隐藏/内部状态 | 否 |
 
-```bash
-caf fork cc:last --at 12 --into codex
-```
+工具调用和结果以可读的转录文本证据携带，不会重新生成为原生工具事件。
 
-## 工作原理
+## Agent Skill
 
-Reader 将文本轮次和工具调用/结果转换成可移植文本证据，再由目标 Adapter 写成原生
-可恢复格式：Codex 使用官方导入 API，Claude Code 和 DeepSeek Harness 使用轻量本地
-信封。`caf` 不维护数据库或持久状态；每次 fork 创建新的目标会话，源会话保持不变。
+CAF 自带一份 [`SKILL.md`](caf/skills/caf/SKILL.md)，让 Agent 可以按请求执行 fork
+（"fork this session into Codex"）。用你所用 Agent 的常规 skill 安装流程安装；
+CAF 提供资产，但不管理宿主 skill 的安装。
 
-## 最近一次真机验证
+## 验证
 
-| 方向 | 验证 |
+每个方向都用真实 Agent CLI 测试过（原生恢复、同一 cwd、源不变、上下文保留）。
+不只用单元测试声称兼容。
+
+| 方向 | 原生恢复 |
 |---|---|
 | Claude Code → Codex | ✅ |
 | Codex → Claude Code | ✅ |
@@ -108,26 +103,17 @@ Reader 将文本轮次和工具调用/结果转换成可移植文本证据，再
 | DeepSeek Harness → Claude Code | ✅ |
 | DeepSeek Harness → Codex | ✅ |
 
-验证包括真实源会话、目标 Agent 原生 resume、cwd 检查和上下文 marker。
-Agent 会话格式会变化，最近一次真机验证日期为 2026-08-18。
+最近一次真机验证：2026-08-18。
 
-## 局限
+## 限制
 
-- 保留文本轮次和可移植工具证据。工具证据以可移植**转录文本**形式保留
-  （`[tool] 名称`、`[tool result] 名称 · ok/error`、输出内容）——不保留原生
-  工具角色语义（这是有意的可移植性取舍，不是缺陷）。
-- 配置、权限、附件和隐藏 Agent 状态不保留。git/工作区状态同样不会被复制——
-  也不需要：目标会话在同一个工作目录里恢复。
+- 携带对话文本和工具证据；Agent 配置、权限、附件和隐藏状态不携带。
+- 不保留原生工具角色语义（有意的可移植性取舍）。
+- 同 Agent fork 不在范围内——请使用 Agent 原生 fork。
 
-## 贡献 / 新增 Agent
+## 添加 Agent
 
-Adapter 是轻量读写模块，参见 [docs/PORTING.md](docs/PORTING.md)。
-
-## 非目标
-
-- 不做 GUI/TUI、记忆层、工作区管理或云同步
-- 不做同 Agent fork（使用 Agent 原生 fork），不迁移配置
-- 不承诺当前三个 Agent 之外的能力；新 Agent 通过 Adapter 加入
+Adapter 是小的读写模块——见 [docs/PORTING.md](docs/PORTING.md)。
 
 ## License
 
