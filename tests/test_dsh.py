@@ -239,6 +239,61 @@ class DshAdapterTest(unittest.TestCase):
         with self.assertRaises(zstd.ZstdError):
             _zstd_decompress(b"\x28\xb5\x2f\xfd garbage")  # corrupt leading frame
 
+    def test_decompress_corrupt_final_frame_fails(self):
+        """Fail closed: a corrupt *complete* final frame (checksum mismatch) must raise,
+        not be mistaken for a truncated tail."""
+        from caf.adapters.dsh import _zstd_decompress
+
+        try:
+            import zstandard as zstd
+        except ImportError:
+            self.skipTest("zstandard is required")
+
+        cctx = zstd.ZstdCompressor(write_checksum=True)
+        f1 = cctx.compress(b'{"type":"user/message"}\n')
+        bad = bytearray(cctx.compress(b'{"type":"turn/end"}\n'))
+        bad[-1] ^= 0xFF  # break the checksum
+        with self.assertRaises(zstd.ZstdError):
+            _zstd_decompress(f1 + bytes(bad))
+
+    def test_decompress_corrupt_middle_frame_fails(self):
+        """A corrupt interior frame must fail the whole read, not be silently skipped."""
+        from caf.adapters.dsh import _zstd_decompress
+
+        try:
+            import zstandard as zstd
+        except ImportError:
+            self.skipTest("zstandard is required")
+
+        cctx = zstd.ZstdCompressor(write_checksum=True)
+        f1 = cctx.compress(b'{"type":"user/message"}\n')
+        bad = bytearray(cctx.compress(b'{"type":"assistant/message"}\n'))
+        bad[-1] ^= 0xFF
+        f3 = cctx.compress(b'{"type":"turn/end"}\n')
+        with self.assertRaises(zstd.ZstdError):
+            _zstd_decompress(f1 + bytes(bad) + f3)
+
+    def test_decompress_multi_frame_passes(self):
+        """A valid multi-frame log decodes completely."""
+        from caf.adapters.dsh import _zstd_decompress
+
+        try:
+            import zstandard as zstd
+        except ImportError:
+            self.skipTest("zstandard is required")
+
+        cctx = zstd.ZstdCompressor(write_checksum=True)
+        frames = [
+            cctx.compress(line)
+            for line in (
+                b'{"type":"user/message"}\n',
+                b'{"type":"assistant/message"}\n',
+                b'{"type":"turn/end"}\n',
+            )
+        ]
+        out = _zstd_decompress(b"".join(frames))
+        self.assertEqual(len(out.decode().splitlines()), 3)
+
     def test_scan_tolerates_truncated_tail_session(self):
         """Forking a session while the source agent appends the last zstd frame must not
         make the session disappear from scan (complete events are preserved)."""

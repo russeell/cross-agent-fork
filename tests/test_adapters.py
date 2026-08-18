@@ -79,6 +79,34 @@ class ClaudeAdapterTest(unittest.TestCase):
         loaded = ClaudeAdapter().load_session(sid)
         self.assertEqual(len(loaded.turns), 2)  # user + assistant text turns
 
+    def test_load_open_tail_is_not_completed(self):
+        """A session whose last turn has no reply is an open tail: it must not be
+        presented as completed (tail_open=True, unfinished), and rendering must not
+        fabricate an end_turn for it."""
+        from caf.adapters.claude import encode_cwd, render_cc_lines
+
+        projects = Path(os.environ["CAF_CC_PROJECTS"])
+        d = projects / encode_cwd("/tmp/fixture-proj")
+        d.mkdir(parents=True, exist_ok=True)
+        sid = "aa020000-0000-0000-0000-0000000000ff"
+        (d / f"{sid}.jsonl").write_text(
+            '{"type":"user","message":{"role":"user","content":[{"type":"text",'
+            '"text":"u1"}]},"isMeta":false,"cwd":"/tmp/fixture-proj"}\n'
+            '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text",'
+            '"text":"a1"}]}}\n'
+            '{"type":"user","message":{"role":"user","content":[{"type":"text",'
+            '"text":"u2-open"}]},"isMeta":false,"cwd":"/tmp/fixture-proj"}\n',
+            encoding="utf-8",
+        )
+        ir = ClaudeAdapter().load_session(sid)
+        self.assertTrue(ir.tail_open)
+        self.assertEqual(ir.unfinished_turns, {2})
+
+        lines = render_cc_lines(ir, sid)
+        rendered = [json.loads(line) for line in lines]
+        assistant_msgs = [m for m in rendered if m.get("type") == "assistant"]
+        self.assertNotIn("end_turn", assistant_msgs[0].get("message", {}))
+
     def test_load(self):
         adapter = ClaudeAdapter()
         meta = adapter.scan_sessions()[0]

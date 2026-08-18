@@ -34,9 +34,11 @@ Otherwise write a thin file-level envelope (Claude Code JSONL, DSH zstd JSONL).
 Every adapter must honor the fork semantics, not just the file format:
 
 1. **Source immutable** — never modify the source session.
-2. **Stable snapshot** — the fork reads a stable state of the source at time T, never a
-   live file being appended (CC sources are byte-copied; sliced/non-CC sources are
-   rendered). The importer/writer never races the source agent.
+2. **Stable snapshot** — the fork reads a bounded point-in-time state of the source at
+   time T (`fstat` size first, then read). Core readers are *tail tolerant, interior
+   strict*: a mid-append final line is dropped, any malformed interior record fails the
+   fork loudly. CC sources bound for the Codex importer are byte-copied; sliced/non-CC
+   sources are rendered. The importer/writer never races the source agent.
 3. **New target identity** — the write product is a new session, never a rewrite.
 4. **Native target resume** — the product must be natively discoverable and resumable.
 5. **Same cwd** — the fork carries the source's working directory; never invent one
@@ -48,9 +50,12 @@ Every adapter must honor the fork semantics, not just the file format:
    text (name, arguments, output, ok/error when actually observed). Unknown status is
    omitted; never invent success.
 9. **No invented state** — write atomically (temp + rename), verify by reading back,
-   roll back on failure, and only touch sessions caf itself created.
-10. **No persistent CAF residue** — temporary bridge files and directories are removed
-    after use; a lone `__caf_bridge__` dir must never make an agent look installed.
+   roll back on failure, and only touch sessions caf itself created. An open tail (last
+   turn not durably closed) is never presented as completed: no fabricated `end_turn`,
+   `stop_reason`, or `turn/end completed`.
+10. **No persistent CAF residue** — temporary bridge files, their `.tmp` leftovers,
+    and directories are removed after use (a failed mid-write must not strand a `.tmp`);
+    a lone `__caf_bridge__` dir must never make an agent look installed.
 
 ## Acceptance (marker test)
 

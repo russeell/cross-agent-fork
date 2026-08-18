@@ -117,13 +117,16 @@ each fork creates a new native target session and leaves the source untouched.
 | DeepSeek Harness → Codex | ✅ |
 
 Verified with real source sessions, native target resume, cwd checks, and continuation
-markers. Session formats change; the last live verification was 2026-08-17.
+markers. Session formats change; the last live verification was 2026-08-18.
 
 ## Limitations
 
-- Text turns and portable tool evidence are carried. Config, permissions, attachments,
-  and hidden agent state are not. Git/workspace state is not copied either — it does not
-  need to be: the target resumes in the same working directory.
+- Text turns and portable tool evidence are carried. Tool evidence is preserved as
+  portable *transcript text* (`[tool] name`, `[tool result] name · ok/error`, output) —
+  native tool-role semantics are not preserved (a portability tradeoff, not a bug).
+- Config, permissions, attachments, and hidden agent state are not. Git/workspace state
+  is not copied either — it does not need to be: the target resumes in the same working
+  directory.
 
 ## Contributing / adding an agent
 

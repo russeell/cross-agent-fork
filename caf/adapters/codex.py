@@ -23,6 +23,7 @@ from caf.core import (
     append_evidence,
     atomic_write,
     read_jsonl,
+    read_stable_jsonl,
     tool_call_text,
     tool_result_text,
 )
@@ -408,7 +409,7 @@ class CodexAdapter(Adapter):
         task_turns: dict[str, int] = {}
         unfinished: set[int] = set()
         for f in self._files_for_session(meta.session_id):
-            for ev in read_jsonl(f):
+            for ev in read_stable_jsonl(f):
                 payload = ev.get("payload") or {}
                 if ev.get("type") == "event_msg":
                     event_type = payload.get("type")
@@ -467,7 +468,12 @@ class CodexAdapter(Adapter):
                     )
         if active_task and active_task in task_turns:
             unfinished.add(task_turns[active_task])
-        return ForkSnapshot(meta, turns, unfinished_turns=unfinished)
+        return ForkSnapshot(
+            meta,
+            turns,
+            unfinished_turns=unfinished,
+            tail_open=bool(active_task),  # last task never reached task_complete
+        )
 
     def _files_for_session(self, sid: str) -> list[Path]:
         """All rollout files for a session id (paged threads merged in path order)."""
@@ -501,10 +507,11 @@ class CodexAdapter(Adapter):
                 )
             new_id = import_external_session(mirror, cwd)
         finally:
-            try:
-                Path(mirror).unlink(missing_ok=True)
-            except OSError:
-                pass
+            for leftover in (mirror, mirror + ".tmp"):
+                try:
+                    Path(leftover).unlink(missing_ok=True)
+                except OSError:
+                    pass
             try:
                 (cc_projects_dir() / "__caf_bridge__").rmdir()
             except OSError:

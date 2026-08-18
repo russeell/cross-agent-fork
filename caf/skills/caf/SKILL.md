@@ -55,11 +55,14 @@ The skill ships inside the wheel at `caf/skills/caf/SKILL.md`. Install it with t
 agent's own skill mechanism, or copy it to the agent's skills directory (Codex:
 `~/.agents/skills/caf/`, Claude Code: `~/.claude/skills/caf/`).
 
-| Agent | Skill auto-discovery |
+CAF ships the skill asset; it does not install or manage host skills. Discovery
+depends on the host agent's own skill mechanism after installation.
+
+| Agent | Discovery after installation |
 |---|---|
 | Claude Code | verified |
 | Codex | verified |
-| DeepSeek Harness | not yet verified — install manually |
+| DeepSeek Harness | manual integration only; host discovery not yet verified |
 
 ## Notes
 

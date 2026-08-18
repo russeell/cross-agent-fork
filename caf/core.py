@@ -44,6 +44,7 @@ class ForkSnapshot:
     turns: list[Turn]
     modified: bool = False  # sliced/injected snapshots must be rendered, not copied
     unfinished_turns: set[int] = field(default_factory=set)
+    tail_open: bool = False  # last turn is not durably closed (mid-append/crash)
 
 
 # ---------------------------------------------------------------- utilities
@@ -58,7 +59,10 @@ def atomic_write(path: Path, text: str) -> None:
 
 
 def read_jsonl(path: Path):
-    """Yield JSONL lines, tolerating bad lines and truncated tails."""
+    """Yield JSONL lines, tolerating bad lines and truncated tails.
+
+    Lenient reader for scans: one corrupt session must not break discovery.
+    """
     if not path.is_file():
         return
     with open(path, encoding="utf-8", errors="replace") as f:
@@ -70,6 +74,37 @@ def read_jsonl(path: Path):
                 yield json.loads(line)
             except json.JSONDecodeError:
                 continue
+
+
+def read_stable_jsonl(path: Path):
+    """Yield complete JSONL records from a bounded point-in-time snapshot.
+
+    Contract: *tail tolerant, interior strict, snapshot bounded.*
+
+    - the file size is fixed first (fstat), so a source agent appending while we
+      read cannot leak records across the boundary;
+    - complete records are parsed; an incomplete final line (no trailing newline,
+      i.e. a mid-append tail) is dropped;
+    - any malformed *interior* line is a hard error — never silently skip it.
+    """
+    if not path.is_file():
+        return
+    with open(path, "rb") as f:
+        size = os.fstat(f.fileno()).st_size
+        data = f.read(size)
+    lines = data.splitlines(keepends=True)
+    for i, line in enumerate(lines):
+        if not line.strip():
+            continue
+        if not line.endswith(b"\n"):
+            continue  # incomplete final line: the source was still appending
+        try:
+            yield json.loads(line.decode("utf-8", errors="replace"))
+        except json.JSONDecodeError as e:
+            raise CafError(
+                f"Malformed session record in {path} at line {i + 1}",
+                hint="The source session file is corrupt; pick another session",
+            ) from e
 
 
 def parse_session_ref(ref: str, adapters) -> tuple[str, str]:

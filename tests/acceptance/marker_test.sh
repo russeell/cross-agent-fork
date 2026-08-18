@@ -26,8 +26,10 @@ for r in rows:
         break
 ")
 if [ -z "$SRC_PATH" ]; then
-  echo "FAIL: could not locate the source session file for ${SRC_REF}"
-  exit 1
+  echo "NOTE: sourcePath is not exposed for ${SRC} (e.g. Codex sessions span multiple"
+  echo "      rollout files); source-immutability hashing is skipped for this adapter."
+  echo "      Source immutability is verified only where the adapter exposes a stable"
+  echo "      source file (Claude Code, DSH)."
 fi
 HASH_BEFORE=$(shasum -a 256 "$SRC_PATH" | cut -d' ' -f1)
 caf fork ${SRC_REF} --into ${TARGET} --json

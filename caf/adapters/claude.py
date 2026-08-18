@@ -19,6 +19,7 @@ from caf.core import (
     append_evidence,
     atomic_write,
     read_jsonl,
+    read_stable_jsonl,
     tool_call_text,
     tool_result_text,
 )
@@ -153,7 +154,10 @@ def render_cc_lines(snapshot: ForkSnapshot, sid: str) -> list[str]:
             "content": [{"type": "text", "text": turn.text}],
         }
         next_role = semantic_turns[i + 1].role if i + 1 < len(semantic_turns) else None
-        if turn.role == "assistant" and next_role != "assistant":
+        is_open_tail = snapshot.tail_open and i == len(semantic_turns) - 1
+        if turn.role == "assistant" and next_role != "assistant" and not is_open_tail:
+            # a durably closed turn gets end_turn; an open tail must not be
+            # misrepresented as completed
             message["stop_reason"] = "end_turn"
         ev: dict = {
             "parentUuid": parent,
@@ -266,7 +270,7 @@ class ClaudeAdapter(Adapter):
         user_turn = 0
         completed: set[int] = set()
         aborted: set[int] = set()
-        for ev in read_jsonl(Path(meta.source_path)):
+        for ev in read_stable_jsonl(Path(meta.source_path)):
             t = ev.get("type")
             if t == "user":
                 msg = ev.get("message") or {}
@@ -319,7 +323,13 @@ class ClaudeAdapter(Adapter):
                     ):
                         completed.add(user_turn)
         unfinished = (set(range(1, user_turn + 1)) - completed) | aborted
-        return ForkSnapshot(meta, turns, unfinished_turns=unfinished)
+        # the last turn is an open tail unless it is durably closed (completed or
+        # aborted): a mid-append/crash session must not be presented as finished
+        last_closed = max(completed | aborted, default=0)
+        tail_open = user_turn > last_closed
+        return ForkSnapshot(
+            meta, turns, unfinished_turns=unfinished, tail_open=tail_open
+        )
 
     def resume_command(self, sid: str, project_dir: str | None) -> str:
         prefix = f"cd {shlex.quote(project_dir)} && " if project_dir else ""

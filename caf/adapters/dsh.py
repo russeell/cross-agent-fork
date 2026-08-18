@@ -49,24 +49,21 @@ def _zstd_decompress(data: bytes) -> bytes:
 
     A truncated *final* frame is tolerated: the source agent may still be appending the
     last frame while we fork it, so the complete frames already decoded are kept instead
-    of failing the whole session. A corrupt leading frame is still a hard failure.
+    of failing the whole session. Anything that raises a zstd error — including a corrupt
+    *complete* final frame (DSH frames carry checksums) — is a hard failure: CAF must
+    never fork data whose integrity is in doubt. The distinction is exact, not a
+    heuristic: truncated input yields partial output without an exception; corruption
+    raises `ZstdError` ("Restored data doesn't match checksum").
     """
     dctx = zstd.ZstdDecompressor()
     out = bytearray()
     pos = 0
     while pos < len(data):
         dobj = dctx.decompressobj()
-        try:
-            out += dobj.decompress(data[pos:])
-        except zstd.ZstdError:
-            if out:
-                break  # incomplete tail frame — keep the complete frames
-            raise
+        out += dobj.decompress(data[pos:])  # corruption raises ZstdError here
         consumed = len(data) - pos - len(dobj.unused_data)
         if consumed <= 0:
-            if out:
-                break  # no frame progress — incomplete tail
-            raise zstd.ZstdError("no frame progress")
+            break  # no frame progress — truncated tail; partial output handled below
         pos += consumed
     out = bytes(out)
     if out and not out.endswith(b"\n"):
@@ -166,16 +163,21 @@ class DshAdapter(Adapter):
                     out.append(meta)
         return out
 
-    def _read_events(self, path: Path) -> list[dict]:
+    def _read_events(self, path: Path, strict: bool = False) -> list[dict]:
         data = _zstd_decompress(path.read_bytes())
         events = []
-        for line in data.decode("utf-8", errors="replace").splitlines():
+        for i, line in enumerate(data.decode("utf-8", errors="replace").splitlines()):
             line = line.strip()
             if not line:
                 continue
             try:
                 events.append(json.loads(line))
             except json.JSONDecodeError:
+                if strict:
+                    raise CafError(
+                        f"Malformed DSH session record in {path} at line {i + 1}",
+                        hint="The source session file is corrupt; pick another session",
+                    )
                 continue
         return events
 
@@ -222,7 +224,7 @@ class DshAdapter(Adapter):
             raise CafError(
                 f"DeepSeek Harness session not found: {sid}", hint="caf list --all"
             )
-        events = self._read_events(Path(meta.source_path))
+        events = self._read_events(Path(meta.source_path), strict=True)
         turns: list[Turn] = []
         pending: dict[str, tuple[int, str]] = {}
         current_turn: int | None = None
@@ -289,7 +291,12 @@ class DshAdapter(Adapter):
             for native_turn, ordinal in turn_ordinals.items()
             if native_turn not in ended
         }
-        return ForkSnapshot(meta, turns, unfinished_turns=unfinished)
+        tail_open = bool(turn_ordinals) and any(
+            native_turn not in ended for native_turn in turn_ordinals
+        )
+        return ForkSnapshot(
+            meta, turns, unfinished_turns=unfinished, tail_open=tail_open
+        )
 
     def resume_command(self, sid: str, project_dir: str | None) -> str:
         prefix = f"cd {shlex.quote(project_dir)} && " if project_dir else ""
@@ -381,7 +388,8 @@ class DshAdapter(Adapter):
                     }
                 )
                 seq += 1
-        if turn_open:
+        if turn_open and not snapshot.tail_open:
+            # only a durably closed last turn gets "completed"; an open tail stays open
             events.append(
                 {
                     "type": "turn/end",
