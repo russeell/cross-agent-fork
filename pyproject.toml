@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cross-agent-fork"
-version = "0.3.0"
-description = "Cross-agent session fork: take a whole session from one agent and continue it in another (Claude Code / Codex / DeepSeek Harness), original untouched"
+version = "0.4.0"
+description = "Bring native agent fork across agent boundaries."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }

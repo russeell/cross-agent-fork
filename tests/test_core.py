@@ -8,13 +8,14 @@ from pathlib import Path
 from caf.core import (
     CafError,
     SessionMeta,
-    ToolSummary,
     Turn,
+    append_evidence,
     atomic_write,
     parse_session_ref,
     pick_recent_session,
     slice_turns,
-    with_tool_lines,
+    tool_call_text,
+    tool_result_text,
 )
 
 
@@ -60,8 +61,12 @@ class CoreTest(unittest.TestCase):
         self.assertTrue(ctx.exception.hint)
 
     def test_pick_recent(self):
-        old = SessionMeta("cc", "a", turns=1, last_active_at=100)
-        new = SessionMeta("codex", "b", turns=1, last_active_at=200)
+        old = SessionMeta(
+            "cc", "a", turns=1, project_dir=os.getcwd(), last_active_at=100
+        )
+        new = SessionMeta(
+            "codex", "b", turns=1, project_dir=os.getcwd(), last_active_at=200
+        )
         picked = pick_recent_session([FakeAdapter([old]), FakeAdapter([new])])
         self.assertEqual(picked.session_id, "b")
 
@@ -83,6 +88,10 @@ class CoreTest(unittest.TestCase):
         picked = pick_recent_session([FakeAdapter([unknown])], project_dir=os.getcwd())
         self.assertIsNone(picked)
 
+    def test_pick_recent_never_returns_unknown_cwd(self):
+        unknown = SessionMeta("cc", "a", turns=1, project_dir=None, last_active_at=999)
+        self.assertIsNone(pick_recent_session([FakeAdapter([unknown])]))
+
     def test_parse_ref_bare_id_ambiguous_across_agents(self):
         """A bare id matching sessions in several adapters must error, not pick the first."""
         adapters = [
@@ -92,14 +101,29 @@ class CoreTest(unittest.TestCase):
         with self.assertRaises(CafError):
             parse_session_ref("abc", adapters)
 
-    def test_with_tool_lines_canonical(self):
-        """Envelope text uses canonical English tokens."""
-        text = with_tool_lines("", [ToolSummary("edit_file", "ok", "src/auth.py")])
-        self.assertEqual(text, "[tool] edit_file · ok · src/auth.py")
+    def test_tool_evidence_is_portable_text(self):
+        """Tool evidence stays textual; the core owns no tool schema."""
+        text = append_evidence("", tool_call_text("edit_file", '{"path":"a.py"}'))
+        text = append_evidence(text, tool_result_text("edit_file", "done", False))
+        self.assertEqual(
+            text,
+            '[tool] edit_file\nargs: {"path":"a.py"}\n[tool result] edit_file · ok\ndone',
+        )
+
+    def test_tool_call_does_not_invent_status(self):
+        self.assertEqual(tool_call_text("Read"), "[tool] Read")
+
+    def test_tool_result_is_not_truncated(self):
+        marker = "x" * 2500 + "TOOL_MARKER"
+        self.assertIn("TOOL_MARKER", tool_result_text("Read", marker, False))
 
     def test_pick_recent_skips_empty(self):
-        empty = SessionMeta("cc", "a", turns=0, last_active_at=999)
-        real = SessionMeta("cc", "b", turns=5, last_active_at=100)
+        empty = SessionMeta(
+            "cc", "a", turns=0, project_dir=os.getcwd(), last_active_at=999
+        )
+        real = SessionMeta(
+            "cc", "b", turns=5, project_dir=os.getcwd(), last_active_at=100
+        )
         picked = pick_recent_session([FakeAdapter([empty, real])])
         self.assertEqual(picked.session_id, "b")
 
@@ -113,16 +137,27 @@ class CoreTest(unittest.TestCase):
 
     def test_slice_through(self):
         turns = self._turns(5)
-        sliced, warning = slice_turns(turns, 3)
+        sliced = slice_turns(turns, 3)
         self.assertEqual(len(sliced), 6)  # u1..u3 + a1..a3
         self.assertEqual(sliced[-1].text, "a3")
-        self.assertIsNone(warning)
 
     def test_slice_incomplete_turn(self):
-        turns = self._turns(3) + [Turn("user", "u4-未完成")]
-        sliced, warning = slice_turns(turns, 4)
-        self.assertEqual(len(sliced), 6)
-        self.assertIn("unfinished", warning)
+        """An unfinished turn must fail loudly, never silently move the fork point."""
+        turns = self._turns(3) + [Turn("user", "u4-unfinished")]
+        with self.assertRaises(CafError) as ctx:
+            slice_turns(turns, 4)
+        self.assertIn("unfinished", str(ctx.exception))
+        self.assertIn("--at 3", ctx.exception.hint)
+
+    def test_slice_rejects_adapter_observed_unfinished_turn(self):
+        turns = self._turns(2)
+        with self.assertRaises(CafError):
+            slice_turns(turns, 2, {2})
+
+    def test_slice_first_unfinished_turn_has_safe_hint(self):
+        with self.assertRaises(CafError) as ctx:
+            slice_turns([Turn("user", "u1")], 1)
+        self.assertNotIn("--at 0", ctx.exception.hint)
 
     def test_slice_includes_all_assistant_segments(self):
         """Turn N = user N plus everything up to the next user (tool loops produce several assistants)."""
@@ -133,17 +168,16 @@ class CoreTest(unittest.TestCase):
             Turn("user", "u2"),
             Turn("assistant", "a3"),
         ]
-        sliced, warning = slice_turns(turns, 1)
+        sliced = slice_turns(turns, 1)
         self.assertEqual([t.text for t in sliced], ["u1", "a1", "a2"])
-        self.assertIsNone(warning)
-        sliced2, _ = slice_turns(turns, 2)
+        sliced2 = slice_turns(turns, 2)
         self.assertEqual([t.text for t in sliced2], ["u1", "a1", "a2", "u2", "a3"])
 
-    def test_slice_consecutive_users_keeps_only_user_n(self):
-        """Multi-part input (user N directly followed by user N+1): turn N is just user N."""
+    def test_slice_consecutive_users_rejects_unfinished_turn(self):
+        """A user message without an assistant reply is not a valid --at boundary."""
         turns = [Turn("user", "u1"), Turn("user", "u2"), Turn("assistant", "a2")]
-        sliced, _ = slice_turns(turns, 1)
-        self.assertEqual([t.text for t in sliced], ["u1"])
+        with self.assertRaises(CafError):
+            slice_turns(turns, 1)
 
     def test_slice_out_of_range(self):
         turns = self._turns(2)

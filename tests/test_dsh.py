@@ -1,4 +1,4 @@
-"""DSH plugin tests: projectKey encoding, real-format reads, write round-trip."""
+"""DSH adapter tests: projectKey encoding, real-format reads, write round-trip."""
 
 import os
 import shutil
@@ -7,15 +7,16 @@ import unittest
 from pathlib import Path
 
 from caf.adapters import discover_adapters
-from caf.core import SessionIR, SessionMeta, ToolSummary, Turn
-from caf.adapters.dsh import DshAdapter, _file_from_args, _project_key
+from caf.core import CafError, ForkSnapshot, SessionMeta, Turn
+from caf.adapters.dsh import DshAdapter, _argument_text, _project_key
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
-class DshPluginTest(unittest.TestCase):
+class DshAdapterTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
+        Path("/tmp/fixture-proj").mkdir(parents=True, exist_ok=True)
         os.environ["CAF_DSH_SESSIONS"] = str(Path(self.tmp) / "sessions")
         os.environ["DSH_HOME"] = str(Path(self.tmp) / "dsh-home")
         (Path(os.environ["DSH_HOME"]) / "profiles" / "tui").mkdir(parents=True)
@@ -50,13 +51,10 @@ class DshPluginTest(unittest.TestCase):
         # a trailing slash adds one '-' (matching the DSH implementation)
         self.assertEqual(_project_key("/tmp/a/"), "--tmp-a---")
 
-    def test_file_from_args_dict_and_str(self):
-        self.assertEqual(_file_from_args('{"file_path": "src/a.py"}'), "src/a.py")
-        self.assertEqual(_file_from_args({"path": "src/b.py"}), "src/b.py")
-        self.assertIsNone(_file_from_args({"cmd": "ls"}))
-        self.assertIsNone(_file_from_args("not-json"))
+    def test_tool_arguments_dict_is_json(self):
+        self.assertEqual(_argument_text({"path": "src/b.py"}), '{"path": "src/b.py"}')
 
-    def test_discovery_includes_plugin(self):
+    def test_discovery_includes_adapter(self):
         names = {a.agent_id for a in discover_adapters()}
         self.assertIn("dsh", names)
 
@@ -83,20 +81,21 @@ class DshPluginTest(unittest.TestCase):
         self.assertEqual(len(ir.turns), 2)
         self.assertEqual(ir.turns[0].role, "user")
         self.assertIn("PKCE", ir.turns[0].text)
-        self.assertEqual(ir.turns[1].tools[0].name, "Read")
-        self.assertEqual(ir.turns[1].tools[0].file, "src/auth.py")
+        self.assertIn("[tool] Read", ir.turns[1].text)
+        self.assertIn("src/auth.py", ir.turns[1].text)
+        self.assertIn("[tool result] Read · ok", ir.turns[1].text)
+        self.assertIn("...", ir.turns[1].text)
+        self.assertEqual(ir.unfinished_turns, set())
 
     def test_write_roundtrip(self):
         adapter = DshAdapter()
-        ir = SessionIR(
-            SessionMeta(
-                "cc", "9f3a12", title="OAuth 重构", project_dir="/tmp/中文项目"
-            ),
+        project = Path(self.tmp) / "中文项目"
+        project.mkdir(parents=True, exist_ok=True)
+        ir = ForkSnapshot(
+            SessionMeta("cc", "9f3a12", title="OAuth 重构", project_dir=str(project)),
             [
                 Turn("user", "把 OAuth 回调改成 PKCE 流程"),
-                Turn(
-                    "assistant", "完成", [ToolSummary("edit_file", "ok", "src/auth.py")]
-                ),
+                Turn("assistant", "完成\n[tool] edit_file"),
             ],
         )
         sid = adapter.write(ir)
@@ -105,31 +104,32 @@ class DshPluginTest(unittest.TestCase):
         meta = adapter.find_session(sid)
         self.assertIsNotNone(meta)
         self.assertEqual(meta.title, "OAuth 重构")
-        self.assertEqual(meta.project_dir, "/tmp/中文项目")
+        self.assertEqual(meta.project_dir, str(project))
         self.assertEqual(meta.turns, 1)
 
         reloaded = adapter.load_session(sid)
         self.assertEqual(len(reloaded.turns), 2)
-        self.assertIn("[tool] edit_file · ok · src/auth.py", reloaded.turns[1].text)
-        cmd = adapter.resume_command(sid, "/tmp/中文项目")
+        self.assertIn("[tool] edit_file", reloaded.turns[1].text)
+        cmd = adapter.resume_command(sid, str(project))
         self.assertIn(f"dsh --profile tui --resume {sid}", cmd)
 
         # directory encoding is correct (each CJK char -> ~XXXX)
-        written = Path(os.environ["CAF_DSH_SESSIONS"])
-        self.assertTrue(
-            list(written.glob("--tmp-~4E2D~6587~9879~76EE--/session-*"))
-            or list(written.glob("--tmp-*/session-*"))
-        )
+        written = Path(os.environ["CAF_DSH_SESSIONS"]) / _project_key(str(project))
+        self.assertTrue(list(written.glob("session-*/session.jsonl.zstd")))
+
+    def test_write_rejects_unknown_cwd(self):
+        with self.assertRaises(CafError):
+            DshAdapter().write(ForkSnapshot(SessionMeta("cc", "src"), []))
 
     def test_write_one_frame_per_line(self):
         """DSH stores one zstd frame per JSON line; a single-frame log is rejected."""
         try:
             import zstandard as zstd
         except ImportError:
-            self.skipTest("需要 zstandard 库（zstd CLI 无法逐帧检查）")
+            self.skipTest("zstandard is required for frame-level checks")
 
         adapter = DshAdapter()
-        ir = SessionIR(
+        ir = ForkSnapshot(
             SessionMeta("cc", "9f3a12", project_dir="/tmp/fixture-proj"),
             [Turn("user", "u1"), Turn("assistant", "a1")],
         )
@@ -174,7 +174,7 @@ class DshPluginTest(unittest.TestCase):
         try:
             import zstandard as zstd
         except ImportError:
-            self.skipTest("需要 zstandard 库")
+            self.skipTest("zstandard is required")
 
         raw = b'{"type":"session","version":0,"id":"session-x"}\n{"type":"turn/start","seq":1}\n'
         single = zstd.ZstdCompressor().compress(raw)
@@ -186,7 +186,7 @@ class DshPluginTest(unittest.TestCase):
         from caf.adapters.dsh import _zstd_decompress
 
         adapter = DshAdapter()
-        ir = SessionIR(
+        ir = ForkSnapshot(
             SessionMeta("cc", "9f3a12", project_dir="/tmp/fixture-proj"),
             [
                 Turn("user", "u1"),
@@ -215,6 +215,65 @@ class DshPluginTest(unittest.TestCase):
         self.assertEqual(types.count("user/message"), 2)
         # each turn opens once and closes once; assistant segments stay inside their turn
         self.assertLess(types.index("assistant/message"), types.index("turn/end"))
+
+    def test_decompress_tolerates_truncated_tail_frame(self):
+        """A session mid-append must not vanish: complete frames are kept, an incomplete
+        final frame is tolerated. A corrupt leading frame is still a hard failure."""
+        from caf.adapters.dsh import _zstd_decompress
+
+        try:
+            import zstandard as zstd
+        except ImportError:
+            self.skipTest("zstandard is required")
+
+        cctx = zstd.ZstdCompressor()
+        f1 = cctx.compress(b'{"type":"user/message"}\n')
+        f2 = cctx.compress(b'{"type":"assistant/message"}\n')
+        tail = cctx.compress(b'{"type":"turn/end"}\n')[:12]  # truncated final frame
+        out = _zstd_decompress(f1 + f2 + tail)
+        self.assertEqual(
+            out.decode().splitlines(),
+            ['{"type":"user/message"}', '{"type":"assistant/message"}'],
+        )
+
+        with self.assertRaises(zstd.ZstdError):
+            _zstd_decompress(b"\x28\xb5\x2f\xfd garbage")  # corrupt leading frame
+
+    def test_scan_tolerates_truncated_tail_session(self):
+        """Forking a session while the source agent appends the last zstd frame must not
+        make the session disappear from scan (complete events are preserved)."""
+        from caf.adapters.dsh import _project_key
+
+        try:
+            import zstandard as zstd
+        except ImportError:
+            self.skipTest("zstandard is required")
+
+        import json as _json
+
+        cctx = zstd.ZstdCompressor()
+        header = {
+            "type": "session",
+            "version": 0,
+            "id": "session-trunc1",
+            "createdAt": 0,
+            "cwd": "/tmp/fixture-proj",
+        }
+        f1 = cctx.compress((_json.dumps(header) + "\n").encode("utf-8"))
+        f2 = cctx.compress(
+            b'{"type":"user/message","seq":1,"data":{"content":[{"type":"text",'
+            b'"text":"u1"}],"source":{"kind":"user"}}}\n'
+        )
+        tail = cctx.compress(b'{"type":"assistant/message"}\n')[:8]
+        root = Path(os.environ["CAF_DSH_SESSIONS"])
+        d = root / _project_key("/tmp/fixture-proj") / "session-trunc1"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "session.jsonl.zstd").write_bytes(f1 + f2 + tail)
+
+        metas = DshAdapter().scan_sessions()
+        self.assertTrue(any(m.session_id == "session-trunc1" for m in metas))
+        meta = next(m for m in metas if m.session_id == "session-trunc1")
+        self.assertEqual(meta.turns, 1)  # complete user message survived the tail cut
 
 
 if __name__ == "__main__":

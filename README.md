@@ -2,21 +2,27 @@
 
 # cross-agent-fork
 
-> Continue the same session across AI agents, without losing context.
+> Bring native agent fork across agent boundaries.
 
-`caf` forks a session from Claude Code, Codex, or DeepSeek Harness into another agent —
-the conversation context and working directory come along, and the source session is
-never modified.
+Coding agents can fork sessions, but only into themselves. `caf` brings that primitive
+across agent boundaries: the target gets a new native resumable session built from the
+source conversation, working directory, and portable tool evidence. The source stays
+untouched.
+
+`caf` forks **session state, not workspace state**. It does not copy your workspace: the
+target resumes in the *same* working directory, so it sees the same local files, branch,
+and uncommitted changes that were already there.
 
 Currently supports Claude Code, Codex, and DeepSeek Harness.
+Tested on macOS / Linux.
 
 ```bash
-caf fork cc:last --into codex
+caf fork --into codex
 ```
 
 ```text
-✓ cc:9f3a → codex
-→ codex resume 019...
+✓ forked  cc:9f3a → codex:019...
+  resume  codex resume 019...
 ```
 
 ## Install
@@ -25,13 +31,18 @@ caf fork cc:last --into codex
 pipx install git+https://github.com/russeell/cross-agent-fork.git
 ```
 
-To use caf inside an agent (Codex / Claude Code), install the skill too:
+The optional agent skill lives in [`caf/skills/caf/`](caf/skills/caf/). CAF ships the
+integration asset but does not manage skill installation. You can ask your agent:
 
-```bash
-caf install-skill          # codex (default); or: caf install-skill claude
+```text
+Install the caf skill from
+https://github.com/russeell/cross-agent-fork/tree/main/caf/skills/caf
+using your normal skill installation workflow, then verify that it is available.
 ```
 
-Then just say "fork the current session into Codex" in that agent.
+Then say “fork this session into Codex.” The skill passes `<current-agent>:last`, avoiding
+CAF's broader cross-agent source heuristic. Use an explicit session ID when exact identity
+is available.
 
 ## Quick start
 
@@ -47,22 +58,20 @@ for the target agent.
 
 ## Switch agents mid-task
 
-The real flow looks like this — you are mid-task in Claude Code, need to switch to Codex:
+The real flow looks like this — you are mid-task in Claude Code and need Codex:
 
 ```text
 $ caf fork --into codex
-Forked: cc:9f3a... -> codex (24 user turns / 110 messages, original untouched)
-Written: codex thread 019abc... (official import)
-
--> resume: codex resume 019abc...
+✓ forked  cc:9f3a... → codex:019abc...
+  resume  codex resume 019abc...
 
 $ codex resume 019abc...
 > Continue where we left off.
 ```
 
-Codex picks up the task — it knows the goal, the files you touched, and what was left
-open, without you re-explaining anything. Verified both ways: Claude Code → Codex and
-Codex → Claude Code (and into DeepSeek Harness).
+The target receives the portable conversation evidence needed to continue the fork.
+What survives is explicit below; CAF does not claim to migrate agent configuration or
+hidden runtime state.
 
 ## Supported agents
 
@@ -89,22 +98,32 @@ wrong:
 caf fork cc:last --at 12 --into codex
 ```
 
-## Extras
-
-- **Agent integration (skills)** — `caf install-skill codex` (or `claude`) installs the
-  bundled skill; then just say "fork the current session into Codex" in that agent.
-
 ## How it works
 
-The session's text turns and essential tool summaries are replayed into the target
+The session's text turns and essential tool evidence are replayed into the target
 agent's native format: Codex via its official import API, Claude Code and DeepSeek
-Harness via thin local envelopes. `caf` keeps no database and no state — it only moves
-sessions.
+Harness via thin local envelopes. `caf` keeps no database and no persistent state —
+each fork creates a new native target session and leaves the source untouched.
+
+## Last live-verified
+
+| Direction | Verified |
+|---|---|
+| Claude Code → Codex | ✅ |
+| Codex → Claude Code | ✅ |
+| Claude Code → DeepSeek Harness | ✅ |
+| Codex → DeepSeek Harness | ✅ |
+| DeepSeek Harness → Claude Code | ✅ |
+| DeepSeek Harness → Codex | ✅ |
+
+Verified with real source sessions, native target resume, cwd checks, and continuation
+markers. Session formats change; the last live verification was 2026-08-17.
 
 ## Limitations
 
-- Text turns and tool summaries are carried; config, permissions, attachments, and git
-  state are not migrated.
+- Text turns and portable tool evidence are carried. Config, permissions, attachments,
+  and hidden agent state are not. Git/workspace state is not copied either — it does not
+  need to be: the target resumes in the same working directory.
 
 ## Contributing / adding an agent
 

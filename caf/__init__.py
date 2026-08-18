@@ -1,3 +1,3 @@
-"""cross-agent-fork (caf) — cross-agent session fork."""
+"""cross-agent-fork (caf) — native agent fork across boundaries."""
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"

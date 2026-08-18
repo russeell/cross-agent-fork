@@ -1,14 +1,12 @@
-"""caf CLI: fork / list / doctor / install-skill."""
+"""caf CLI: fork / list / doctor."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import os
-import shutil
 import sys
 from datetime import datetime
-from pathlib import Path
 
 from caf import __version__
 from caf.adapters import Adapter, discover_adapters, get_adapter
@@ -62,7 +60,7 @@ def _discovery_line(
     by_agent: dict[str, int] = {}
     if sessions is not None:
         for m in sessions:
-            by_agent[m.provider_id] = by_agent.get(m.provider_id, 0) + 1
+            by_agent[m.agent_id] = by_agent.get(m.agent_id, 0) + 1
         adapters = [a for a in adapters if a.agent_id in by_agent]
     for a in adapters:
         try:
@@ -132,10 +130,14 @@ def _render_table(
     print(head + f"{_pad('Session', 18)}  {_pad('Title', 28)}{'Turns':>4}  {'Time'}")
     for i, m in enumerate(rows, 1):
         title = _pad(_truncate(m.title, 28) or "(untitled)", 28)
-        sid = _pad(f"{m.provider_id}:{m.session_id[:12]}", 18)
+        sid = _pad(f"{m.agent_id}:{m.session_id[:12]}", 18)
         marker = (
             "  <- current project"
-            if (show_marker and m.project_dir == current_cwd)
+            if (
+                show_marker
+                and m.project_dir
+                and os.path.realpath(m.project_dir) == os.path.realpath(current_cwd)
+            )
             else ""
         )
         prefix = f"  {i:>2}. " if numbered else "  "
@@ -151,17 +153,15 @@ def _turn_stats(turns) -> tuple[int, int]:
     return users, len(turns)
 
 
-def _turns_label(n: int) -> str:
-    return f"{n} user turn" if n == 1 else f"{n} user turns"
-
-
 def _usable_sessions(adapters: list[Adapter]) -> list[SessionMeta]:
     """Forkable sessions: non-empty and with an existing working directory."""
     out = []
     for meta in _all_sessions(adapters):
         if meta.turns == 0:
             continue
-        if meta.project_dir and not os.path.isdir(meta.project_dir):
+        if not meta.project_dir:
+            continue  # unknown cwd would be invented state — never fork it
+        if not os.path.isdir(meta.project_dir):
             continue
         out.append(meta)
     return out
@@ -181,7 +181,7 @@ def _pick_session(rows: list[SessionMeta], raw: str) -> SessionMeta:
         m
         for m in rows
         if m.session_id.startswith(low)
-        or f"{m.provider_id}:{m.session_id}".startswith(low)
+        or f"{m.agent_id}:{m.session_id}".startswith(low)
     ]
     if len(prefix_matches) > 1:
         raise CafError(
@@ -223,10 +223,10 @@ def _resolve_source(adapters: list[Adapter], ref: str | None, into: str | None =
     candidates = [a for a in adapters if a.read_ready() and a.agent_id != exclude]
     recent = pick_recent_session(candidates, project_dir=os.getcwd())
     if recent:
-        return get_adapter(candidates, recent.provider_id), recent
+        return get_adapter(candidates, recent.agent_id), recent
     recent = pick_recent_session(candidates)
     if recent:
-        return get_adapter(candidates, recent.provider_id), recent
+        return get_adapter(candidates, recent.agent_id), recent
     raise CafError("No forkable session found", hint="caf list --all")
 
 
@@ -234,7 +234,7 @@ def _resolve_target(
     adapters: list[Adapter], source_meta: SessionMeta, into: str | None
 ) -> Adapter:
     others = [
-        a for a in adapters if a.write_ready() and a.agent_id != source_meta.provider_id
+        a for a in adapters if a.write_ready() and a.agent_id != source_meta.agent_id
     ]
     if into:
         target = get_adapter(adapters, into)
@@ -243,7 +243,7 @@ def _resolve_target(
                 f"{into} cannot receive forks (write side unavailable)",
                 hint="Run caf doctor for install hints",
             )
-        if target.agent_id == source_meta.provider_id:
+        if target.agent_id == source_meta.agent_id:
             raise CafError(
                 "Source and target agents must be different",
                 hint="Use the agent's native fork for same-agent forks",
@@ -281,8 +281,9 @@ def _fork_interactive(adapters: list[Adapter]):
     usable = sorted(
         _usable_sessions(readable), key=lambda m: m.last_active_at, reverse=True
     )
-    here = [m for m in usable if m.project_dir == cwd]
-    others = [m for m in usable if m.project_dir != cwd]
+    real_cwd = os.path.realpath(cwd)
+    here = [m for m in usable if os.path.realpath(m.project_dir) == real_cwd]
+    others = [m for m in usable if os.path.realpath(m.project_dir) != real_cwd]
     ordered = here + others
     if not ordered:
         raise CafError(
@@ -297,10 +298,10 @@ def _fork_interactive(adapters: list[Adapter]):
         )
     raw = _pick("> source [Enter=recent / number / id prefix / title keyword]: ")
     chosen = _pick_session(ordered, raw)
-    src_adapter = get_adapter(adapters, chosen.provider_id)
+    src_adapter = get_adapter(adapters, chosen.agent_id)
     tgt = _resolve_target(adapters, chosen, None)
     print(
-        f"  Fork {chosen.provider_id}:{chosen.session_id[:12]} (whole session) -> {tgt.agent_id}; "
+        f"  Fork {chosen.agent_id}:{chosen.session_id[:12]} (whole session) -> {tgt.agent_id}; "
         "original untouched"
     )
     if not _confirm("  [Enter to confirm / q to cancel]: "):
@@ -339,28 +340,35 @@ def cmd_fork(args) -> int:
         src_adapter, source_meta = _resolve_source(adapters, None, into=args.into)
         target = _resolve_target(adapters, source_meta, args.into)
 
-    ir = src_adapter.load_session(source_meta.session_id)
+    snapshot = src_adapter.load_session(source_meta.session_id)
     target_name = target.agent_id
 
+    if not snapshot.turns:
+        raise CafError(
+            "Source session is empty; nothing to fork",
+            hint="Pick a session with turns from caf list --all",
+        )
+
     fork_note = ""
-    user_turns, total_items = _turn_stats(ir.turns)
+    user_turns, total_items = _turn_stats(snapshot.turns)
     if args.at is not None:
-        ir.turns, warning = slice_turns(ir.turns, args.at)
-        ir.modified = True
-        user_turns, total_items = _turn_stats(ir.turns)
-        if warning:
-            print(f"warning: {warning}")
-        if not ir.turns:
-            raise CafError("Nothing to fork")
+        snapshot.turns = slice_turns(snapshot.turns, args.at, snapshot.unfinished_turns)
+        snapshot.modified = True
+        user_turns, total_items = _turn_stats(snapshot.turns)
         fork_note = f" @{args.at}"
 
-    if source_meta.project_dir and not os.path.isdir(source_meta.project_dir):
+    if not source_meta.project_dir:
+        raise CafError(
+            "Source session working directory is unknown; it cannot be forked safely.",
+            hint="Pick a session with a known cwd from caf list --all",
+        )
+    if not os.path.isdir(source_meta.project_dir):
         raise CafError(
             f"Source session working directory does not exist: {source_meta.project_dir}",
             hint="Pick another session with caf list --all",
         )
 
-    new_id = target.write(ir)
+    new_id = target.write(snapshot)
 
     if not new_id:
         raise CafError("Verify failed: official import returned no thread id")
@@ -371,10 +379,11 @@ def cmd_fork(args) -> int:
         print(
             json.dumps(
                 {
-                    "source": f"{source_meta.provider_id}:{source_meta.session_id}",
+                    "source": f"{source_meta.agent_id}:{source_meta.session_id}",
                     "target": target_name,
                     "session_id": new_id,
-                    "turns": len(ir.turns),
+                    "user_turns": user_turns,
+                    "messages": total_items,
                     "resume_command": resume_cmd,
                 },
                 ensure_ascii=False,
@@ -382,14 +391,11 @@ def cmd_fork(args) -> int:
         )
         return 0
 
-    write_desc = "official import" if target_name == "codex" else "file-level envelope"
     print(
-        f"Forked: {source_meta.provider_id}:{source_meta.session_id[:8]}{fork_note} -> {target_name} "
-        f"({_turns_label(user_turns)} / {total_items} messages, original untouched)"
+        f"✓ forked  {source_meta.agent_id}:{source_meta.session_id[:8]}{fork_note} "
+        f"→ {target_name}:{new_id[:12]}"
     )
-    print(f"Written: {target_name} {new_id[:8]}... ({write_desc})")
-    print()
-    print("-> resume: " + resume_cmd)
+    print(f"  resume  {resume_cmd}")
     return 0
 
 
@@ -401,7 +407,7 @@ def cmd_list(args) -> int:
     rows = _all_sessions(adapters)
     if args.agent_ref:
         target = get_adapter(adapters, args.agent_ref)
-        rows = [m for m in rows if m.provider_id == target.agent_id]
+        rows = [m for m in rows if m.agent_id == target.agent_id]
     if args.search:
         kw = args.search.lower()
         rows = [m for m in rows if kw in m.title.lower()]
@@ -422,7 +428,7 @@ def cmd_list(args) -> int:
             json.dumps(
                 [
                     {
-                        "providerId": m.provider_id,
+                        "agentId": m.agent_id,
                         "sessionId": m.session_id,
                         "title": m.title,
                         "projectDir": m.project_dir,
@@ -444,11 +450,11 @@ def cmd_list(args) -> int:
         _render_table(shown, os.getcwd())
         if _stdout_isatty():
             top = shown[0]
-            others = [a.agent_id for a in adapters if a.agent_id != top.provider_id]
+            others = [a.agent_id for a in adapters if a.agent_id != top.agent_id]
             into = f" --into {others[0]}" if len(others) == 1 else ""
             print()
             print(
-                f"-> fork the most recent: caf fork {top.provider_id}:{top.session_id[:12]}{into}"
+                f"-> fork the most recent: caf fork {top.agent_id}:{top.session_id[:12]}{into}"
             )
             print(
                 "  more: --all all | --limit N more | -s search | caf fork interactive"
@@ -474,8 +480,8 @@ def cmd_doctor(args) -> int:
         rows.append(
             {
                 "agent": adapter.display_name or adapter.agent_id,
-                "read": read,
-                "write": write,
+                "from": read,
+                "to": write,
                 "version": adapter.store_version(),
                 "store": adapter.store_path(),
                 "install_hint": adapter.install_hint,
@@ -488,55 +494,20 @@ def cmd_doctor(args) -> int:
 
     print(_discovery_line([a for a in discovered if a.read_ready()]))
     for r in rows:
-        mark = "✓" if r["write"] == "ok" else ("[!]" if r["read"] == "ok" else "[X]")
+        mark = "✓" if r["to"] == "ok" else ("[!]" if r["from"] == "ok" else "[X]")
         print(
-            f"  {mark} {r['agent']:8s} read {r['read']:5s} write {r['write']:5s} "
+            f"  {mark} {r['agent']:8s} from {r['from']:5s} to {r['to']:5s} "
             f"v{r['version'] or '?'}  {r['store']}"
         )
-        if (r["write"] == "off" or r["read"] == "off") and r["install_hint"]:
+        if (r["to"] == "off" or r["from"] == "off") and r["install_hint"]:
             print(f"      install: {r['install_hint']}")
-    return 0
-
-
-# ---------------------------------------------------------------- main
-
-
-_SKILL_SRC = Path(__file__).parent / "skills" / "caf"
-
-
-def cmd_install_skill(args) -> int:
-    """Install the caf skill into an agent (codex default): one command, no manual copy."""
-    targets = {
-        "codex": Path(
-            os.environ.get("CAF_AGENTS_DIR", str(Path.home() / ".agents" / "skills"))
-        ),
-        "claude": Path(
-            os.environ.get(
-                "CAF_CLAUDE_SKILLS_DIR", str(Path.home() / ".claude" / "skills")
-            )
-        ),
-    }
-    agent = args.agent or "codex"
-    if agent not in targets:
-        raise CafError(f"Unsupported skill target: {agent}", hint="codex | claude")
-    src = _SKILL_SRC
-    if not src.is_dir():
-        raise CafError(
-            "Skill bundle not found in this installation",
-            hint="Reinstall cross-agent-fork",
-        )
-    dst = targets[agent] / "caf"
-    shutil.copytree(src, dst, dirs_exist_ok=True)
-    n = sum(1 for f in dst.rglob("*") if f.is_file())
-    print(f"✓ installed: {dst} ({n} files)")
     return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="caf",
-        description="Cross-agent session fork: whole session + cwd + resumable identity, "
-        "original untouched",
+        description="Bring native agent fork across agent boundaries.",
     )
     parser.add_argument("--version", action="version", version=f"caf {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -551,7 +522,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_fork.add_argument(
         "--at",
         type=int,
-        help="Fork through user turn N (default = last completed turn)",
+        help="Fork through user turn N (default: the whole current session snapshot)",
     )
     p_fork.add_argument(
         "--into", help="Target agent (default = another installed agent)"
@@ -575,17 +546,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_doc.add_argument("--json", action="store_true")
     p_doc.set_defaults(func=cmd_doctor)
 
-    p_skill = sub.add_parser(
-        "install-skill", help="Install the caf skill into an agent"
-    )
-    p_skill.add_argument(
-        "agent",
-        nargs="?",
-        default="codex",
-        help="Target agent (codex default, or claude)",
-    )
-    p_skill.set_defaults(func=cmd_install_skill)
-
     return parser
 
 
@@ -594,16 +554,16 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return args.func(args)
     except CafError as e:
-        print("Error: " + str(e))
+        print("Error: " + str(e), file=sys.stderr)
         if e.hint:
-            print("  -> try: " + e.hint)
+            print("  -> try: " + e.hint, file=sys.stderr)
         return 1
     except KeyboardInterrupt:
-        print("")
+        print("", file=sys.stderr)
         return 130
     except Exception as e:  # safety net: never let the CLI print a naked traceback
-        print(f"Unexpected error: {type(e).__name__}: {e}")
-        print("  -> try: caf doctor")
+        print(f"Unexpected error: {type(e).__name__}: {e}", file=sys.stderr)
+        print("  -> try: caf doctor", file=sys.stderr)
         return 1
 
 

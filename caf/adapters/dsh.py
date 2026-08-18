@@ -22,11 +22,12 @@ import zstandard as zstd
 from caf.adapters import Adapter
 from caf.core import (
     CafError,
-    SessionIR,
+    ForkSnapshot,
     SessionMeta,
-    ToolSummary,
     Turn,
-    with_tool_lines,
+    append_evidence,
+    tool_call_text,
+    tool_result_text,
 )
 
 _SAFE = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-")
@@ -44,18 +45,36 @@ def _dsh_home() -> Path:
 
 def _zstd_decompress(data: bytes) -> bytes:
     """Decompress a multi-frame log: decompress() silently returns only the first frame,
-    so walk frames one by one (DSH writes one frame per JSON line)."""
+    so walk frames one by one (DSH writes one frame per JSON line).
+
+    A truncated *final* frame is tolerated: the source agent may still be appending the
+    last frame while we fork it, so the complete frames already decoded are kept instead
+    of failing the whole session. A corrupt leading frame is still a hard failure.
+    """
     dctx = zstd.ZstdDecompressor()
     out = bytearray()
     pos = 0
     while pos < len(data):
         dobj = dctx.decompressobj()
-        out += dobj.decompress(data[pos:])
+        try:
+            out += dobj.decompress(data[pos:])
+        except zstd.ZstdError:
+            if out:
+                break  # incomplete tail frame — keep the complete frames
+            raise
         consumed = len(data) - pos - len(dobj.unused_data)
         if consumed <= 0:
+            if out:
+                break  # no frame progress — incomplete tail
             raise zstd.ZstdError("no frame progress")
         pos += consumed
-    return bytes(out)
+    out = bytes(out)
+    if out and not out.endswith(b"\n"):
+        # DSH stores one JSON line per frame and every line ends with '\n'; a tail that
+        # does not end on a line boundary is a partial final frame — drop the fragment.
+        nl = out.rfind(b"\n")
+        out = out[: nl + 1] if nl >= 0 else b""
+    return out
 
 
 def _zstd_compress_frames(chunks: list[bytes]) -> bytes:
@@ -97,19 +116,14 @@ def _text_from_content(content) -> str:
     return "\n".join(parts)
 
 
-def _file_from_args(arguments) -> str | None:
-    """Extract a file name from tool/call arguments (accepts a JSON string or a parsed dict)."""
-    if isinstance(arguments, str):
-        try:
-            arguments = json.loads(arguments)
-        except Exception:
-            return None
-    if isinstance(arguments, dict):
-        for key in ("file_path", "path", "file", "file_name"):
-            val = arguments.get(key)
-            if isinstance(val, str):
-                return val
-    return None
+def _argument_text(value) -> str:
+    """Keep tool arguments readable whether DSH stores raw JSON or a parsed object."""
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return str(value)
 
 
 class DshAdapter(Adapter):
@@ -193,7 +207,7 @@ class DshAdapter(Adapter):
             title = first_user[:80]
         stat = path.stat()
         return SessionMeta(
-            provider_id=self.agent_id,
+            agent_id=self.agent_id,
             session_id=sid,
             title=title,
             project_dir=cwd,
@@ -202,7 +216,7 @@ class DshAdapter(Adapter):
             last_active_at=stat.st_mtime,
         )
 
-    def load_session(self, sid: str) -> SessionIR:
+    def load_session(self, sid: str) -> ForkSnapshot:
         meta = self.find_session(sid)
         if not meta:
             raise CafError(
@@ -210,35 +224,72 @@ class DshAdapter(Adapter):
             )
         events = self._read_events(Path(meta.source_path))
         turns: list[Turn] = []
+        pending: dict[str, tuple[int, str]] = {}
+        current_turn: int | None = None
+        turn_ordinals: dict[int, int] = {}
+        ended: set[int] = set()
+        user_turn = 0
         for ev in events[1:]:
             t = ev.get("type")
             data = ev.get("data") or {}
-            if t == "user/message" and (data.get("source") or {}).get("kind") != "tool":
+            if t == "turn/start":
+                current_turn = data.get("turn")
+            elif t == "turn/end":
+                native_turn = data.get("turn")
+                if isinstance(native_turn, int):
+                    ended.add(native_turn)
+            elif (
+                t == "user/message" and (data.get("source") or {}).get("kind") != "tool"
+            ):
                 text = _text_from_content(data.get("content"))
                 if text:
                     turns.append(Turn("user", text))
+                    user_turn += 1
+                    if isinstance(current_turn, int):
+                        turn_ordinals[current_turn] = user_turn
             elif t == "assistant/message":
                 msg = data.get("message") or {}
                 text = _text_from_content(msg.get("content"))
                 if text:
                     turns.append(Turn("assistant", text))
             elif t == "tool/call" and turns and turns[-1].role == "assistant":
-                turns[-1].tools.append(
-                    ToolSummary(
-                        str(data.get("name", "tool")),
-                        "ok",
-                        _file_from_args(data.get("arguments")),
-                    )
+                name = str(data.get("name", "tool"))
+                call_id = str(data.get("callId", ""))
+                turns[-1].text = append_evidence(
+                    turns[-1].text,
+                    tool_call_text(name, _argument_text(data.get("arguments", ""))),
                 )
-            elif (
-                t == "tool/result"
-                and turns
-                and turns[-1].role == "assistant"
-                and data.get("error")
-            ):
-                if turns[-1].tools:
-                    turns[-1].tools[-1].status = "error"
-        return SessionIR(meta, turns)
+                if call_id:
+                    pending[call_id] = (len(turns) - 1, name)
+            elif t == "tool/result":
+                msg = data.get("message") or {}
+                result_text = ""
+                for block in msg.get("content") or []:
+                    if (
+                        not isinstance(block, dict)
+                        or block.get("type") != "tool-result"
+                    ):
+                        continue
+                    result_text = _text_from_content(block.get("content"))
+                    break
+                call_id = (msg.get("source") or {}).get("callId", "")
+                match = pending.get(call_id)
+                if not match:
+                    if not turns or turns[-1].role != "assistant":
+                        turns.append(Turn("assistant", ""))
+                    idx, name = len(turns) - 1, "tool"
+                else:
+                    idx, name = match
+                turns[idx].text = append_evidence(
+                    turns[idx].text,
+                    tool_result_text(name, result_text, bool(data.get("error"))),
+                )
+        unfinished = {
+            ordinal
+            for native_turn, ordinal in turn_ordinals.items()
+            if native_turn not in ended
+        }
+        return ForkSnapshot(meta, turns, unfinished_turns=unfinished)
 
     def resume_command(self, sid: str, project_dir: str | None) -> str:
         prefix = f"cd {shlex.quote(project_dir)} && " if project_dir else ""
@@ -249,9 +300,13 @@ class DshAdapter(Adapter):
         opener = "open" if sys.platform == "darwin" else "xdg-open"
         return f"{opener} http://127.0.0.1:3080  # dsh web: open the session list and continue ({sid[:8]})"
 
-    def write(self, ir: SessionIR) -> str:
+    def write(self, snapshot: ForkSnapshot) -> str:
         """Write a native DSH session: header + event sequence, zstd-compressed, atomic write."""
-        cwd = ir.session.project_dir or os.getcwd()
+        cwd = snapshot.session.project_dir
+        if not cwd or not os.path.isdir(cwd):
+            raise CafError(
+                "Cannot fork: source working directory is unknown or does not exist."
+            )
         sid = f"session-{uuid4()}"
         now_ms = int(time.time() * 1000)
         events: list[dict] = []
@@ -259,7 +314,7 @@ class DshAdapter(Adapter):
         turn = 0
         first_user_seq: int | None = None
         turn_open = False
-        for t in ir.turns:
+        for t in snapshot.turns:
             if t.role == "user":
                 if turn_open:
                     # close the previous turn first (multi-part input / consecutive users)
@@ -301,7 +356,6 @@ class DshAdapter(Adapter):
                 )
                 seq += 1
             elif t.role == "assistant":
-                text = with_tool_lines(t.text, t.tools)
                 events.append(
                     {
                         "type": "assistant/message",
@@ -314,8 +368,8 @@ class DshAdapter(Adapter):
                             "message": {
                                 "id": str(uuid4()),
                                 "role": "assistant",
-                                "content": [{"type": "text", "text": text}]
-                                if text
+                                "content": [{"type": "text", "text": t.text}]
+                                if t.text
                                 else [],
                                 "source": {
                                     "kind": "model",
@@ -350,13 +404,13 @@ class DshAdapter(Adapter):
         lines = [json.dumps(header, ensure_ascii=False)]
         lines += [json.dumps(ev, ensure_ascii=False) for ev in events]
 
-        if ir.session.title and first_user_seq is not None:
+        if snapshot.session.title and first_user_seq is not None:
             title_ev = {
                 "type": "session/title",
                 "seq": seq,
                 "time": now_ms,
                 "data": {
-                    "title": ir.session.title[:120],
+                    "title": snapshot.session.title[:120],
                     "messageSeqs": [first_user_seq],
                     "source": {"kind": "fallback"},
                 },

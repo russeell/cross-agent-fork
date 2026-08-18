@@ -1,21 +1,53 @@
 #!/usr/bin/env bash
-# marker 验收测试（开发期，需真实 agent 与登录）
-# 用法: tests/acceptance/marker_test.sh <src-agent> <target-agent>
-# 验证: 源会话第 3 轮埋暗号 → fork → 目标 resume 提问 → 答对即通过
+# Fork acceptance test (manual, needs real agents + logins)
+# Usage: tests/acceptance/marker_test.sh <src-agent> <target-agent>
+# Verifies fork semantics: text AND tool-result markers cross, cwd matches, source unchanged.
 set -euo pipefail
 
 SRC="${1:-claude}"
 TARGET="${2:-codex}"
-MARKER="MARKER-FOX-42"
+TEXT_MARKER="MARKER-FOX-42"
+TOOL_MARKER="MARKER-TOOL-7"
 
-echo "== 1. 在源会话埋暗号（手动步骤，先准备一个含暗号的会话）"
-echo "   MARKER=$MARKER"
-
-echo "== 2. fork 整会话"
-caf fork ${SRC}:last --into ${TARGET} --json
-
-echo "== 3. 用目标 agent 恢复并提问（人工确认）"
-echo "   请执行上面输出的 resume 命令，然后提问："
-echo "   「上一会话的暗号是？」"
+echo "== 1. Prepare the source session (manual)"
+echo "   a) Ask the agent to create a file tools/marker.txt containing: $TOOL_MARKER"
+echo "   b) Then say: my secret is $TEXT_MARKER — remember it."
+echo "   The agent's Read of marker.txt is the tool-result carrier."
 echo ""
-echo "== 4. 答对 = 通过（证明上下文跨 agent 保真）"
+echo "== 2. Fork the whole session (source hash must be unchanged)"
+SRC_REF="${SRC}:last"
+SRC_PATH=$(caf list --all --json | python3 -c "
+import json, sys
+rows = json.load(sys.stdin)
+agent, _, sid = '$SRC_REF'.partition(':')
+for r in rows:
+    if r['agentId'] == agent and (sid == 'last' or r['sessionId'].startswith(sid)):
+        print(r['sourcePath'] or '')
+        break
+")
+if [ -z "$SRC_PATH" ]; then
+  echo "FAIL: could not locate the source session file for ${SRC_REF}"
+  exit 1
+fi
+HASH_BEFORE=$(shasum -a 256 "$SRC_PATH" | cut -d' ' -f1)
+caf fork ${SRC_REF} --into ${TARGET} --json
+HASH_AFTER=$(shasum -a 256 "$SRC_PATH" | cut -d' ' -f1)
+if [ "$HASH_BEFORE" = "$HASH_AFTER" ]; then
+  echo "OK: source session unchanged (hash $HASH_BEFORE)"
+else
+  echo "FAIL: source session was modified by the fork"
+  exit 1
+fi
+echo ""
+echo "== 3. Resume in the target and ask (manual confirmation)"
+echo "   Q1: What is my secret?            (expect: $TEXT_MARKER)"
+echo "   Q2: What was inside marker.txt?   (expect: $TOOL_MARKER — proves tool results crossed)"
+echo "   Q3: What working directory are we in?  (expect: the source cwd)"
+echo ""
+echo "== 4. Pass = fork semantics survived (text + tool evidence + cwd)."
+echo ""
+echo "== 5. Verify an exact --at boundary (manual)"
+echo "   Prepare a second source session with TEXT_MARKER before turn N and LATE_MARKER after turn N."
+echo "   Run: caf fork ${SRC}:last --at N --into ${TARGET} --json"
+echo "   Resume the target and confirm TEXT_MARKER is known but LATE_MARKER is unknown."
+echo "   An unfinished requested turn must fail; caf must not silently move the boundary."

@@ -15,7 +15,17 @@ from uuid import uuid4
 from caf._rpc import RpcClient
 from caf import __version__
 from caf.adapters import Adapter
-from caf.core import CafError, SessionIR, SessionMeta, Turn, atomic_write, read_jsonl
+from caf.core import (
+    CafError,
+    ForkSnapshot,
+    SessionMeta,
+    Turn,
+    append_evidence,
+    atomic_write,
+    read_jsonl,
+    tool_call_text,
+    tool_result_text,
+)
 
 
 def _codex_home() -> Path:
@@ -38,6 +48,7 @@ _INJECTED_PREFIXES = (
     "<recommended_plugins>",
     "<filesystem",
     "<permission_profile",
+    "<turn_aborted>",
 )
 
 
@@ -79,15 +90,31 @@ def _is_cc_source(path: str) -> bool:
         return False
 
 
-def _bridge_cc_mirror(ir: SessionIR) -> str:
-    """Non-CC source -> render a CC mirror under projects/__caf_bridge__ (for the official importer, deleted after use)."""
+def _bridge_cc_mirror(snapshot: ForkSnapshot) -> str:
+    """Stable snapshot under projects/__caf_bridge__ for the official importer.
+
+    CC sources that were not sliced are byte-copied verbatim (the live JSONL may be
+    mid-append); anything else is rendered as a CC envelope. The caller removes the
+    file and the (now empty) bridge directory after import — CAF leaves no residue.
+    """
     from caf.adapters.claude import cc_projects_dir, render_cc_lines
 
     bridge_dir = cc_projects_dir() / "__caf_bridge__"
     bridge_dir.mkdir(parents=True, exist_ok=True)
     sid = str(uuid4())
     path = bridge_dir / f"{sid}.jsonl"
-    atomic_write(path, "\n".join(render_cc_lines(ir, sid)) + "\n")
+    source = snapshot.session.source_path
+    if (
+        not snapshot.modified
+        and source
+        and Path(source).is_file()
+        and _is_cc_source(source)
+    ):
+        # byte-copy the source records verbatim: importing the live file itself would
+        # race with the source agent appending to it
+        shutil.copyfile(source, path)
+    else:
+        atomic_write(path, "\n".join(render_cc_lines(snapshot, sid)) + "\n")
     return str(path)
 
 
@@ -140,6 +167,37 @@ def _iter_messages(ev: dict) -> Optional[tuple[str, str]]:
     elif t in ("user_message", "assistant_message"):
         text = _payload_text(p)
         return ("user" if t == "user_message" else "assistant", text) if text else None
+    return None
+
+
+def _iter_tool_events(ev: dict) -> tuple[str, dict] | None:
+    """(call|output, payload) from one event: modern response_item or legacy events."""
+    t = ev.get("type")
+    p = ev.get("payload") or {}
+    if t == "response_item" and p.get("type") == "function_call":
+        return "call", {
+            "name": str(p.get("name", "tool")),
+            "call_id": str(p.get("call_id", "")),
+            "arguments": str(p.get("arguments", "") or ""),
+        }
+    if t == "response_item" and p.get("type") == "function_call_output":
+        return "output", {
+            "call_id": str(p.get("call_id", "")),
+            "output": _payload_text(p) or str(p.get("output", "") or ""),
+            "is_error": bool(p.get("is_error")),
+        }
+    if t == "function_call":
+        return "call", {
+            "name": str(p.get("name", "tool")),
+            "call_id": str(p.get("call_id", "")),
+            "arguments": str(p.get("arguments", "") or ""),
+        }
+    if t == "function_call_output":
+        return "output", {
+            "call_id": str(p.get("call_id", "")),
+            "output": _payload_text(p) or str(p.get("output", "") or ""),
+            "is_error": bool(p.get("is_error")),
+        }
     return None
 
 
@@ -325,7 +383,7 @@ class CodexAdapter(Adapter):
             updated_ms = info.get("updated_at_ms") or 0
             out.append(
                 SessionMeta(
-                    provider_id=self.agent_id,
+                    agent_id=self.agent_id,
                     session_id=sid,
                     title=title,
                     project_dir=cwd,
@@ -339,18 +397,77 @@ class CodexAdapter(Adapter):
         out.sort(key=lambda m: m.last_active_at, reverse=True)
         return out
 
-    def load_session(self, sid: str) -> SessionIR:
+    def load_session(self, sid: str) -> ForkSnapshot:
         meta = self.find_session(sid)
         if not meta:
             raise CafError(f"Codex session not found: {sid}", hint="caf list --all")
         turns: list[Turn] = []
+        pending: dict[str, tuple[int, str]] = {}
+        user_turn = 0
+        active_task: str | None = None
+        task_turns: dict[str, int] = {}
+        unfinished: set[int] = set()
         for f in self._files_for_session(meta.session_id):
             for ev in read_jsonl(f):
+                payload = ev.get("payload") or {}
+                if ev.get("type") == "event_msg":
+                    event_type = payload.get("type")
+                    if event_type == "task_started":
+                        active_task = str(payload.get("turn_id", "")) or None
+                    elif event_type in ("task_complete", "turn_aborted"):
+                        task_id = str(payload.get("turn_id", ""))
+                        ordinal = task_turns.get(task_id)
+                        if event_type == "turn_aborted" and ordinal:
+                            unfinished.add(ordinal)
+                        if task_id == active_task:
+                            active_task = None
                 msg = _iter_messages(ev)
                 if msg:
                     role, text = msg
-                    turns.append(Turn(role, text))
-        return SessionIR(meta, turns)
+                    if role == "user":
+                        user_turn += 1
+                        if active_task:
+                            task_turns[active_task] = user_turn
+                    if (
+                        role == "assistant"
+                        and turns
+                        and turns[-1].role == "assistant"
+                        and any(idx == len(turns) - 1 for idx, _ in pending.values())
+                    ):
+                        # Some Codex rollouts emit function_call before the textual
+                        # assistant item. Keep both in the same portable turn.
+                        turns[-1].text = append_evidence(turns[-1].text, text)
+                    else:
+                        turns.append(Turn(role, text))
+                    continue
+                tool = _iter_tool_events(ev)
+                if not tool:
+                    continue
+                kind, data = tool
+                if kind == "call":
+                    if not turns or turns[-1].role != "assistant":
+                        turns.append(Turn("assistant", ""))
+                    turns[-1].text = append_evidence(
+                        turns[-1].text,
+                        tool_call_text(data["name"], data["arguments"]),
+                    )
+                    if data["call_id"]:
+                        pending[data["call_id"]] = (len(turns) - 1, data["name"])
+                else:
+                    match = pending.get(data["call_id"])
+                    if not match:
+                        if not turns or turns[-1].role != "assistant":
+                            turns.append(Turn("assistant", ""))
+                        idx, name = len(turns) - 1, "tool"
+                    else:
+                        idx, name = match
+                    turns[idx].text = append_evidence(
+                        turns[idx].text,
+                        tool_result_text(name, data["output"], data["is_error"]),
+                    )
+        if active_task and active_task in task_turns:
+            unfinished.add(task_turns[active_task])
+        return ForkSnapshot(meta, turns, unfinished_turns=unfinished)
 
     def _files_for_session(self, sid: str) -> list[Path]:
         """All rollout files for a session id (paged threads merged in path order)."""
@@ -364,29 +481,34 @@ class CodexAdapter(Adapter):
         prefix = f"cd {shlex.quote(project_dir)} && " if project_dir else ""
         return f"{prefix}codex resume {sid}"
 
-    def write(self, ir: SessionIR) -> str:
-        """Official import: externalAgentConfig/import (same mechanism as codex-plugin-cc)."""
+    def write(self, snapshot: ForkSnapshot) -> str:
+        """Official import: externalAgentConfig/import (same mechanism as codex-plugin-cc).
+
+        The importer always receives a stable CAF-owned snapshot, never the live source
+        file: a CC session may be mid-append while we fork it. The snapshot file and the
+        bridge directory are removed after import (no persistent CAF residue).
+        """
         if not _codex_bin():
             raise CafError("codex CLI not found", hint="npm install -g @openai/codex")
-        source = ir.session.source_path
-        mirror: Optional[str] = None
-        if ir.modified or not (
-            source and Path(source).is_file() and _is_cc_source(source)
-        ):
-            # IR was sliced/injected, or the source is not CC -> render a CC mirror
-            # -> official import (deleted after use)
-            mirror = _bridge_cc_mirror(ir)
-            source = mirror
+        from caf.adapters.claude import cc_projects_dir
+
+        mirror = _bridge_cc_mirror(snapshot)
         try:
-            new_id = import_external_session(
-                source, ir.session.project_dir or os.getcwd()
-            )
+            cwd = snapshot.session.project_dir
+            if not cwd or not os.path.isdir(cwd):
+                raise CafError(
+                    "Cannot fork: source working directory is unknown or does not exist."
+                )
+            new_id = import_external_session(mirror, cwd)
         finally:
-            if mirror:
-                try:
-                    Path(mirror).unlink(missing_ok=True)
-                except OSError:
-                    pass
+            try:
+                Path(mirror).unlink(missing_ok=True)
+            except OSError:
+                pass
+            try:
+                (cc_projects_dir() / "__caf_bridge__").rmdir()
+            except OSError:
+                pass  # not empty (other mirrors) or already gone
         return new_id
 
 
