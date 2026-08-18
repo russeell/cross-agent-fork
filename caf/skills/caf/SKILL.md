@@ -15,20 +15,32 @@ new native session in another agent; the original session is never modified.
 - "what sessions are there" -> list
 - fork failed or "check the environment" -> doctor
 
-## Commands
+## Determine the source agent
+
+This skill is agent-neutral: it runs inside any of the supported agents. Always use the
+explicit source matching the agent that is running this skill — never an implicit source:
+
+| Agent running this skill | Source ref |
+|---|---|
+| Claude Code | `cc:last` |
+| Codex CLI | `codex:last` |
+| DeepSeek Harness | `dsh:last` |
+
+Every supported agent is a first-class fork source and target (`cc <-> codex <-> dsh`);
+pick the target with `--into` and let the user choose when they do not.
+
+## Fork
 
 ```bash
-# inside an agent, ALWAYS name the source explicitly (your own harness first):
-caf fork cc:last --into codex     # inside Claude Code
-caf fork codex:last --into claude # inside Codex
-caf fork dsh:last --into codex    # inside DeepSeek Harness
-caf fork cc:9f3a --at 12 --into codex  # fork through turn 12
+caf fork <source>:last --into <target>          # e.g. caf fork cc:last --into codex
+caf fork <source>:last --at 12 --into <target>  # fork through turn 12
 caf list [claude|codex|dsh] [-s keyword] [--all]
 caf doctor
 ```
 
-Bare `caf fork --into <target>` is for terminals: it picks the most recent session in
-the current directory (excluding the target agent).
+Bare `caf fork --into <target>` without a source is a terminal convenience (it picks the
+most recent session in the current directory, excluding the target agent). Inside an
+agent, always name the source explicitly.
 
 ## After a fork
 
@@ -36,6 +48,18 @@ Show the two output lines verbatim in a fenced code block; do not summarize, tra
 or reformat them. Explain anything else in the user's language. For a DSH web target,
 explain that the command opens the local session list; it is not an exact deep link.
 Do not start the target agent unless the user asks.
+
+## Installation & discovery
+
+The skill ships inside the wheel at `caf/skills/caf/SKILL.md`. Install it with the
+agent's own skill mechanism, or copy it to the agent's skills directory (Codex:
+`~/.agents/skills/caf/`, Claude Code: `~/.claude/skills/caf/`).
+
+| Agent | Skill auto-discovery |
+|---|---|
+| Claude Code | verified |
+| Codex | verified |
+| DeepSeek Harness | not yet verified — install manually |
 
 ## Notes
 
