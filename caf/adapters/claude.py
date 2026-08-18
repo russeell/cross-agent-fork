@@ -230,8 +230,10 @@ class ClaudeAdapter(Adapter):
                     text = _text_blocks(msg)
                     if _is_turn_aborted(text):
                         continue
+                    if text is None:
+                        continue  # tool-only user events are not conversational turns
                     turns += 1
-                    if not first_user and text:
+                    if not first_user:
                         first_user = " ".join(text.split())
                     if not cwd and isinstance(ev.get("cwd"), str):
                         cwd = ev["cwd"]

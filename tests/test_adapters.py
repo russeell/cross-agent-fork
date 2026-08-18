@@ -55,6 +55,30 @@ class ClaudeAdapterTest(unittest.TestCase):
         self.assertEqual(meta.project_dir, "/tmp/fixture-proj")
         self.assertEqual(meta.turns, 2)
 
+    def test_scan_ignores_tool_only_user_events(self):
+        """A user event without text (tool-result carrier) is not a conversational
+        turn: scan counts must match load (list shows what fork will fork)."""
+        from caf.adapters.claude import encode_cwd
+
+        projects = Path(os.environ["CAF_CC_PROJECTS"])
+        d = projects / encode_cwd("/tmp/fixture-proj")
+        d.mkdir(parents=True, exist_ok=True)
+        sid = "aa010000-0000-0000-0000-0000000000ff"
+        (d / f"{sid}.jsonl").write_text(
+            '{"type":"user","message":{"role":"user","content":[{"type":"tool_result",'
+            '"tool_use_id":"t1","content":"tool output"}],"isMeta":false}}\n'
+            '{"type":"user","message":{"role":"user","content":[{"type":"text",'
+            '"text":"real user question"}],"isMeta":false,"cwd":"/tmp/fixture-proj"}}\n'
+            '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text",'
+            '"text":"answer"}]}}\n',
+            encoding="utf-8",
+        )
+        meta = ClaudeAdapter().find_session(sid)
+        self.assertIsNotNone(meta)
+        self.assertEqual(meta.turns, 1)  # tool-only user event is not counted
+        loaded = ClaudeAdapter().load_session(sid)
+        self.assertEqual(len(loaded.turns), 2)  # user + assistant text turns
+
     def test_load(self):
         adapter = ClaudeAdapter()
         meta = adapter.scan_sessions()[0]
