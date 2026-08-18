@@ -28,6 +28,9 @@ CAF 不复制 Git 或工作区状态，也不运行任何 daemon、数据库或�
 
 ## 当前支持的 Agent
 
+CAF 由 fork 契约定义，而不是由 Agent 类别定义：任何能把会话可靠表达为
+「源会话 → 独立的原生目标会话」的 Agent 都符合这个契约。当前随包提供的适配器：
+
 | Agent | Ref |
 |---|---|
 | Claude Code | `cc` |

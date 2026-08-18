@@ -30,6 +30,10 @@ daemon, database, or background service.
 
 ## Currently supported agents
 
+CAF is defined by a fork contract, not by an agent category: any agent whose
+sessions can be reliably expressed as *source session → independent native
+target session* fits the contract. The adapters shipped today:
+
 | Agent | Ref |
 |---|---|
 | Claude Code | `cc` |
