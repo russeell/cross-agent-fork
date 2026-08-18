@@ -1,4 +1,4 @@
-"""Claude Code adapter: read CC JSONL (whole session) + write the CC envelope (file-level)."""
+"""Claude Code adapter: read CC JSONL + write the CC envelope (file-level)."""
 
 from __future__ import annotations
 
