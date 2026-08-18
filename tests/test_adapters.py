@@ -460,7 +460,7 @@ class CodexAdapterTest(unittest.TestCase):
                 Turn("assistant", "a2"),
             ],
         )
-        ir.turns, _ = slice_turns(ir.turns, 1)
+        ir.turns = slice_turns(ir.turns, 1)
         ir.modified = True
         with _mock.patch(
             "caf.adapters.codex.import_external_session", side_effect=fake_import

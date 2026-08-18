@@ -60,7 +60,7 @@ def _discovery_line(
     by_agent: dict[str, int] = {}
     if sessions is not None:
         for m in sessions:
-            by_agent[m.provider_id] = by_agent.get(m.provider_id, 0) + 1
+            by_agent[m.agent_id] = by_agent.get(m.agent_id, 0) + 1
         adapters = [a for a in adapters if a.agent_id in by_agent]
     for a in adapters:
         try:
@@ -130,7 +130,7 @@ def _render_table(
     print(head + f"{_pad('Session', 18)}  {_pad('Title', 28)}{'Turns':>4}  {'Time'}")
     for i, m in enumerate(rows, 1):
         title = _pad(_truncate(m.title, 28) or "(untitled)", 28)
-        sid = _pad(f"{m.provider_id}:{m.session_id[:12]}", 18)
+        sid = _pad(f"{m.agent_id}:{m.session_id[:12]}", 18)
         marker = (
             "  <- current project"
             if (
@@ -181,7 +181,7 @@ def _pick_session(rows: list[SessionMeta], raw: str) -> SessionMeta:
         m
         for m in rows
         if m.session_id.startswith(low)
-        or f"{m.provider_id}:{m.session_id}".startswith(low)
+        or f"{m.agent_id}:{m.session_id}".startswith(low)
     ]
     if len(prefix_matches) > 1:
         raise CafError(
@@ -223,10 +223,10 @@ def _resolve_source(adapters: list[Adapter], ref: str | None, into: str | None =
     candidates = [a for a in adapters if a.read_ready() and a.agent_id != exclude]
     recent = pick_recent_session(candidates, project_dir=os.getcwd())
     if recent:
-        return get_adapter(candidates, recent.provider_id), recent
+        return get_adapter(candidates, recent.agent_id), recent
     recent = pick_recent_session(candidates)
     if recent:
-        return get_adapter(candidates, recent.provider_id), recent
+        return get_adapter(candidates, recent.agent_id), recent
     raise CafError("No forkable session found", hint="caf list --all")
 
 
@@ -234,7 +234,7 @@ def _resolve_target(
     adapters: list[Adapter], source_meta: SessionMeta, into: str | None
 ) -> Adapter:
     others = [
-        a for a in adapters if a.write_ready() and a.agent_id != source_meta.provider_id
+        a for a in adapters if a.write_ready() and a.agent_id != source_meta.agent_id
     ]
     if into:
         target = get_adapter(adapters, into)
@@ -243,7 +243,7 @@ def _resolve_target(
                 f"{into} cannot receive forks (write side unavailable)",
                 hint="Run caf doctor for install hints",
             )
-        if target.agent_id == source_meta.provider_id:
+        if target.agent_id == source_meta.agent_id:
             raise CafError(
                 "Source and target agents must be different",
                 hint="Use the agent's native fork for same-agent forks",
@@ -298,10 +298,10 @@ def _fork_interactive(adapters: list[Adapter]):
         )
     raw = _pick("> source [Enter=recent / number / id prefix / title keyword]: ")
     chosen = _pick_session(ordered, raw)
-    src_adapter = get_adapter(adapters, chosen.provider_id)
+    src_adapter = get_adapter(adapters, chosen.agent_id)
     tgt = _resolve_target(adapters, chosen, None)
     print(
-        f"  Fork {chosen.provider_id}:{chosen.session_id[:12]} (whole session) -> {tgt.agent_id}; "
+        f"  Fork {chosen.agent_id}:{chosen.session_id[:12]} (whole session) -> {tgt.agent_id}; "
         "original untouched"
     )
     if not _confirm("  [Enter to confirm / q to cancel]: "):
@@ -343,18 +343,18 @@ def cmd_fork(args) -> int:
     snapshot = src_adapter.load_session(source_meta.session_id)
     target_name = target.agent_id
 
+    if not snapshot.turns:
+        raise CafError(
+            "Source session is empty; nothing to fork",
+            hint="Pick a session with turns from caf list --all",
+        )
+
     fork_note = ""
     user_turns, total_items = _turn_stats(snapshot.turns)
     if args.at is not None:
-        snapshot.turns, warning = slice_turns(
-            snapshot.turns, args.at, snapshot.unfinished_turns
-        )
+        snapshot.turns = slice_turns(snapshot.turns, args.at, snapshot.unfinished_turns)
         snapshot.modified = True
         user_turns, total_items = _turn_stats(snapshot.turns)
-        if warning:
-            print(f"warning: {warning}")
-        if not snapshot.turns:
-            raise CafError("Nothing to fork")
         fork_note = f" @{args.at}"
 
     if not source_meta.project_dir:
@@ -379,7 +379,7 @@ def cmd_fork(args) -> int:
         print(
             json.dumps(
                 {
-                    "source": f"{source_meta.provider_id}:{source_meta.session_id}",
+                    "source": f"{source_meta.agent_id}:{source_meta.session_id}",
                     "target": target_name,
                     "session_id": new_id,
                     "user_turns": user_turns,
@@ -392,7 +392,7 @@ def cmd_fork(args) -> int:
         return 0
 
     print(
-        f"✓ forked  {source_meta.provider_id}:{source_meta.session_id[:8]}{fork_note} "
+        f"✓ forked  {source_meta.agent_id}:{source_meta.session_id[:8]}{fork_note} "
         f"→ {target_name}:{new_id[:12]}"
     )
     print(f"  resume  {resume_cmd}")
@@ -407,7 +407,7 @@ def cmd_list(args) -> int:
     rows = _all_sessions(adapters)
     if args.agent_ref:
         target = get_adapter(adapters, args.agent_ref)
-        rows = [m for m in rows if m.provider_id == target.agent_id]
+        rows = [m for m in rows if m.agent_id == target.agent_id]
     if args.search:
         kw = args.search.lower()
         rows = [m for m in rows if kw in m.title.lower()]
@@ -428,7 +428,7 @@ def cmd_list(args) -> int:
             json.dumps(
                 [
                     {
-                        "providerId": m.provider_id,
+                        "agentId": m.agent_id,
                         "sessionId": m.session_id,
                         "title": m.title,
                         "projectDir": m.project_dir,
@@ -450,11 +450,11 @@ def cmd_list(args) -> int:
         _render_table(shown, os.getcwd())
         if _stdout_isatty():
             top = shown[0]
-            others = [a.agent_id for a in adapters if a.agent_id != top.provider_id]
+            others = [a.agent_id for a in adapters if a.agent_id != top.agent_id]
             into = f" --into {others[0]}" if len(others) == 1 else ""
             print()
             print(
-                f"-> fork the most recent: caf fork {top.provider_id}:{top.session_id[:12]}{into}"
+                f"-> fork the most recent: caf fork {top.agent_id}:{top.session_id[:12]}{into}"
             )
             print(
                 "  more: --all all | --limit N more | -s search | caf fork interactive"
@@ -554,16 +554,16 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return args.func(args)
     except CafError as e:
-        print("Error: " + str(e))
+        print("Error: " + str(e), file=sys.stderr)
         if e.hint:
-            print("  -> try: " + e.hint)
+            print("  -> try: " + e.hint, file=sys.stderr)
         return 1
     except KeyboardInterrupt:
-        print("")
+        print("", file=sys.stderr)
         return 130
     except Exception as e:  # safety net: never let the CLI print a naked traceback
-        print(f"Unexpected error: {type(e).__name__}: {e}")
-        print("  -> try: caf doctor")
+        print(f"Unexpected error: {type(e).__name__}: {e}", file=sys.stderr)
+        print("  -> try: caf doctor", file=sys.stderr)
         return 1
 
 

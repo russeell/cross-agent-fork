@@ -34,16 +34,23 @@ Otherwise write a thin file-level envelope (Claude Code JSONL, DSH zstd JSONL).
 Every adapter must honor the fork semantics, not just the file format:
 
 1. **Source immutable** — never modify the source session.
-2. **New target identity** — the write product is a new session, never a rewrite.
-3. **Native target resume** — the product must be natively discoverable and resumable.
-4. **Same cwd** — the fork carries the source's working directory; never invent one
+2. **Stable snapshot** — the fork reads a stable state of the source at time T, never a
+   live file being appended (CC sources are byte-copied; sliced/non-CC sources are
+   rendered). The importer/writer never races the source agent.
+3. **New target identity** — the write product is a new session, never a rewrite.
+4. **Native target resume** — the product must be natively discoverable and resumable.
+5. **Same cwd** — the fork carries the source's working directory; never invent one
    (a session with unknown cwd is not forkable).
-5. **Exact fork point** — `--at N` forks exactly through turn N; an unfinished turn
+6. **Exact fork point** — `--at N` forks exactly through turn N; an unfinished turn
    fails loudly instead of silently moving the boundary.
-6. **Portable evidence preserved** — readers turn tool calls/results into portable text.
-   Unknown status is omitted; only an observed result is marked `ok` or `error`.
-7. **No invented state** — write atomically (temp + rename), verify by reading back,
+7. **Text preserved** — every text turn inside the boundary is carried over.
+8. **Tool call/result evidence preserved** — tool calls and results become portable
+   text (name, arguments, output, ok/error when actually observed). Unknown status is
+   omitted; never invent success.
+9. **No invented state** — write atomically (temp + rename), verify by reading back,
    roll back on failure, and only touch sessions caf itself created.
+10. **No persistent CAF residue** — temporary bridge files and directories are removed
+    after use; a lone `__caf_bridge__` dir must never make an agent look installed.
 
 ## Acceptance (marker test)
 
@@ -73,5 +80,7 @@ A correct answer means the fork (not just the parser) survived.
 - **DSH is one zstd frame per JSON line**, checksummed, first frame = header line.
   Message events (`user/message`, `assistant/message`) require `surfaceOp: "append"`
   and a message `id`; `seq` must start at 0 and stay contiguous.
-- **Codex import only accepts CC sources**: non-CC sessions are rendered to a CC mirror
-  under `~/.claude/projects/__caf_bridge__/`, imported, then deleted.
+- **Codex import only accepts CC sources**: every Codex write first builds a stable
+  snapshot under `~/.claude/projects/__caf_bridge__/` (byte-copy for untouched CC
+  sources, rendered CC envelope otherwise), imports it, then removes the file *and*
+  the directory. Claude scans skip `__caf_bridge__` entirely.

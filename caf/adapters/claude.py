@@ -175,7 +175,15 @@ class ClaudeAdapter(Adapter):
     display_name = "claude"
 
     def read_ready(self) -> bool:
-        return _projects_dir().is_dir()
+        """Whether a real CC store exists: a lone __caf_bridge__ directory created by
+        the Codex import path must not make Claude look installed."""
+        root = _projects_dir()
+        if not root.is_dir():
+            return False
+        for d in root.iterdir():
+            if d.is_dir() and d.name != "__caf_bridge__":
+                return True
+        return False
 
     def write_ready(self) -> bool:
         """Writing creates the store (mkdir), but resume needs the CLI installed."""
@@ -193,8 +201,8 @@ class ClaudeAdapter(Adapter):
         if not root.is_dir():
             return out
         for d in sorted(root.iterdir()):
-            if not d.is_dir():
-                continue
+            if not d.is_dir() or d.name == "__caf_bridge__":
+                continue  # never surface CAF's own import mirrors as sessions
             for f in sorted(d.glob("*.jsonl")):
                 meta = self._meta_from_file(f)
                 if meta:
@@ -236,7 +244,7 @@ class ClaudeAdapter(Adapter):
             title = first_line[:80]
         stat = path.stat()
         return SessionMeta(
-            provider_id=self.agent_id,
+            agent_id=self.agent_id,
             session_id=path.stem,
             title=title,
             project_dir=cwd,

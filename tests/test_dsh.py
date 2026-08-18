@@ -216,6 +216,65 @@ class DshAdapterTest(unittest.TestCase):
         # each turn opens once and closes once; assistant segments stay inside their turn
         self.assertLess(types.index("assistant/message"), types.index("turn/end"))
 
+    def test_decompress_tolerates_truncated_tail_frame(self):
+        """A session mid-append must not vanish: complete frames are kept, an incomplete
+        final frame is tolerated. A corrupt leading frame is still a hard failure."""
+        from caf.adapters.dsh import _zstd_decompress
+
+        try:
+            import zstandard as zstd
+        except ImportError:
+            self.skipTest("zstandard is required")
+
+        cctx = zstd.ZstdCompressor()
+        f1 = cctx.compress(b'{"type":"user/message"}\n')
+        f2 = cctx.compress(b'{"type":"assistant/message"}\n')
+        tail = cctx.compress(b'{"type":"turn/end"}\n')[:12]  # truncated final frame
+        out = _zstd_decompress(f1 + f2 + tail)
+        self.assertEqual(
+            out.decode().splitlines(),
+            ['{"type":"user/message"}', '{"type":"assistant/message"}'],
+        )
+
+        with self.assertRaises(zstd.ZstdError):
+            _zstd_decompress(b"\x28\xb5\x2f\xfd garbage")  # corrupt leading frame
+
+    def test_scan_tolerates_truncated_tail_session(self):
+        """Forking a session while the source agent appends the last zstd frame must not
+        make the session disappear from scan (complete events are preserved)."""
+        from caf.adapters.dsh import _project_key
+
+        try:
+            import zstandard as zstd
+        except ImportError:
+            self.skipTest("zstandard is required")
+
+        import json as _json
+
+        cctx = zstd.ZstdCompressor()
+        header = {
+            "type": "session",
+            "version": 0,
+            "id": "session-trunc1",
+            "createdAt": 0,
+            "cwd": "/tmp/fixture-proj",
+        }
+        f1 = cctx.compress((_json.dumps(header) + "\n").encode("utf-8"))
+        f2 = cctx.compress(
+            b'{"type":"user/message","seq":1,"data":{"content":[{"type":"text",'
+            b'"text":"u1"}],"source":{"kind":"user"}}}\n'
+        )
+        tail = cctx.compress(b'{"type":"assistant/message"}\n')[:8]
+        root = Path(os.environ["CAF_DSH_SESSIONS"])
+        d = root / _project_key("/tmp/fixture-proj") / "session-trunc1"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "session.jsonl.zstd").write_bytes(f1 + f2 + tail)
+
+        metas = DshAdapter().scan_sessions()
+        self.assertTrue(any(m.session_id == "session-trunc1" for m in metas))
+        meta = next(m for m in metas if m.session_id == "session-trunc1")
+        self.assertEqual(meta.turns, 1)  # complete user message survived the tail cut
+
 
 if __name__ == "__main__":
     unittest.main()

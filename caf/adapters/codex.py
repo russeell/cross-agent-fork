@@ -91,14 +91,30 @@ def _is_cc_source(path: str) -> bool:
 
 
 def _bridge_cc_mirror(snapshot: ForkSnapshot) -> str:
-    """Non-CC source -> render a CC mirror under projects/__caf_bridge__ (for the official importer, deleted after use)."""
+    """Stable snapshot under projects/__caf_bridge__ for the official importer.
+
+    CC sources that were not sliced are byte-copied verbatim (the live JSONL may be
+    mid-append); anything else is rendered as a CC envelope. The caller removes the
+    file and the (now empty) bridge directory after import — CAF leaves no residue.
+    """
     from caf.adapters.claude import cc_projects_dir, render_cc_lines
 
     bridge_dir = cc_projects_dir() / "__caf_bridge__"
     bridge_dir.mkdir(parents=True, exist_ok=True)
     sid = str(uuid4())
     path = bridge_dir / f"{sid}.jsonl"
-    atomic_write(path, "\n".join(render_cc_lines(snapshot, sid)) + "\n")
+    source = snapshot.session.source_path
+    if (
+        not snapshot.modified
+        and source
+        and Path(source).is_file()
+        and _is_cc_source(source)
+    ):
+        # byte-copy the source records verbatim: importing the live file itself would
+        # race with the source agent appending to it
+        shutil.copyfile(source, path)
+    else:
+        atomic_write(path, "\n".join(render_cc_lines(snapshot, sid)) + "\n")
     return str(path)
 
 
@@ -367,7 +383,7 @@ class CodexAdapter(Adapter):
             updated_ms = info.get("updated_at_ms") or 0
             out.append(
                 SessionMeta(
-                    provider_id=self.agent_id,
+                    agent_id=self.agent_id,
                     session_id=sid,
                     title=title,
                     project_dir=cwd,
@@ -466,31 +482,33 @@ class CodexAdapter(Adapter):
         return f"{prefix}codex resume {sid}"
 
     def write(self, snapshot: ForkSnapshot) -> str:
-        """Official import: externalAgentConfig/import (same mechanism as codex-plugin-cc)."""
+        """Official import: externalAgentConfig/import (same mechanism as codex-plugin-cc).
+
+        The importer always receives a stable CAF-owned snapshot, never the live source
+        file: a CC session may be mid-append while we fork it. The snapshot file and the
+        bridge directory are removed after import (no persistent CAF residue).
+        """
         if not _codex_bin():
             raise CafError("codex CLI not found", hint="npm install -g @openai/codex")
-        source = snapshot.session.source_path
-        mirror: Optional[str] = None
-        if snapshot.modified or not (
-            source and Path(source).is_file() and _is_cc_source(source)
-        ):
-            # IR was sliced/injected, or the source is not CC -> render a CC mirror
-            # -> official import (deleted after use)
-            mirror = _bridge_cc_mirror(snapshot)
-            source = mirror
+        from caf.adapters.claude import cc_projects_dir
+
+        mirror = _bridge_cc_mirror(snapshot)
         try:
             cwd = snapshot.session.project_dir
             if not cwd or not os.path.isdir(cwd):
                 raise CafError(
                     "Cannot fork: source working directory is unknown or does not exist."
                 )
-            new_id = import_external_session(source, cwd)
+            new_id = import_external_session(mirror, cwd)
         finally:
-            if mirror:
-                try:
-                    Path(mirror).unlink(missing_ok=True)
-                except OSError:
-                    pass
+            try:
+                Path(mirror).unlink(missing_ok=True)
+            except OSError:
+                pass
+            try:
+                (cc_projects_dir() / "__caf_bridge__").rmdir()
+            except OSError:
+                pass  # not empty (other mirrors) or already gone
         return new_id
 
 

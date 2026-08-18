@@ -45,18 +45,36 @@ def _dsh_home() -> Path:
 
 def _zstd_decompress(data: bytes) -> bytes:
     """Decompress a multi-frame log: decompress() silently returns only the first frame,
-    so walk frames one by one (DSH writes one frame per JSON line)."""
+    so walk frames one by one (DSH writes one frame per JSON line).
+
+    A truncated *final* frame is tolerated: the source agent may still be appending the
+    last frame while we fork it, so the complete frames already decoded are kept instead
+    of failing the whole session. A corrupt leading frame is still a hard failure.
+    """
     dctx = zstd.ZstdDecompressor()
     out = bytearray()
     pos = 0
     while pos < len(data):
         dobj = dctx.decompressobj()
-        out += dobj.decompress(data[pos:])
+        try:
+            out += dobj.decompress(data[pos:])
+        except zstd.ZstdError:
+            if out:
+                break  # incomplete tail frame — keep the complete frames
+            raise
         consumed = len(data) - pos - len(dobj.unused_data)
         if consumed <= 0:
+            if out:
+                break  # no frame progress — incomplete tail
             raise zstd.ZstdError("no frame progress")
         pos += consumed
-    return bytes(out)
+    out = bytes(out)
+    if out and not out.endswith(b"\n"):
+        # DSH stores one JSON line per frame and every line ends with '\n'; a tail that
+        # does not end on a line boundary is a partial final frame — drop the fragment.
+        nl = out.rfind(b"\n")
+        out = out[: nl + 1] if nl >= 0 else b""
+    return out
 
 
 def _zstd_compress_frames(chunks: list[bytes]) -> bytes:
@@ -189,7 +207,7 @@ class DshAdapter(Adapter):
             title = first_user[:80]
         stat = path.stat()
         return SessionMeta(
-            provider_id=self.agent_id,
+            agent_id=self.agent_id,
             session_id=sid,
             title=title,
             project_dir=cwd,

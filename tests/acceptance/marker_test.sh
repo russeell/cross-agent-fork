@@ -14,9 +14,30 @@ echo "   a) Ask the agent to create a file tools/marker.txt containing: $TOOL_MA
 echo "   b) Then say: my secret is $TEXT_MARKER — remember it."
 echo "   The agent's Read of marker.txt is the tool-result carrier."
 echo ""
-echo "== 2. Fork the whole session"
-caf fork ${SRC}:last --into ${TARGET} --json
-echo "   -> record the source session hash BEFORE forking and confirm it is unchanged after."
+echo "== 2. Fork the whole session (source hash must be unchanged)"
+SRC_REF="${SRC}:last"
+SRC_PATH=$(caf list --all --json | python3 -c "
+import json, sys
+rows = json.load(sys.stdin)
+agent, _, sid = '$SRC_REF'.partition(':')
+for r in rows:
+    if r['agentId'] == agent and (sid == 'last' or r['sessionId'].startswith(sid)):
+        print(r['sourcePath'] or '')
+        break
+")
+if [ -z "$SRC_PATH" ]; then
+  echo "FAIL: could not locate the source session file for ${SRC_REF}"
+  exit 1
+fi
+HASH_BEFORE=$(shasum -a 256 "$SRC_PATH" | cut -d' ' -f1)
+caf fork ${SRC_REF} --into ${TARGET} --json
+HASH_AFTER=$(shasum -a 256 "$SRC_PATH" | cut -d' ' -f1)
+if [ "$HASH_BEFORE" = "$HASH_AFTER" ]; then
+  echo "OK: source session unchanged (hash $HASH_BEFORE)"
+else
+  echo "FAIL: source session was modified by the fork"
+  exit 1
+fi
 echo ""
 echo "== 3. Resume in the target and ask (manual confirmation)"
 echo "   Q1: What is my secret?            (expect: $TEXT_MARKER)"

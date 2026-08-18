@@ -27,7 +27,7 @@ class Turn:
 
 @dataclass
 class SessionMeta:
-    provider_id: str
+    agent_id: str
     session_id: str
     title: str = ""
     project_dir: str | None = None
@@ -113,7 +113,7 @@ def pick_recent_session(adapters, project_dir: str | None = None) -> SessionMeta
 
 def slice_turns(
     turns: list[Turn], at: int, unfinished_turns: set[int] | None = None
-) -> tuple[list[Turn], str | None]:
+) -> list[Turn]:
     """Slice a snapshot by user-message sequence: include user N through its reply.
     A requested turn without an assistant reply fails instead of moving the boundary."""
     if at < 1:
@@ -155,7 +155,7 @@ def slice_turns(
             f"Turn {at} is unfinished (the session ends there without a reply).",
             hint=hint,
         )
-    return turns[: end + 1], None
+    return turns[: end + 1]
 
 
 def append_evidence(text: str, block: str) -> str:

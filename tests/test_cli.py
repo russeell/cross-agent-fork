@@ -16,14 +16,17 @@ from caf.cli import main
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
-def _run(argv: list[str], env_overrides: dict | None = None) -> tuple[int, str]:
-    buf = io.StringIO()
+def _run(argv: list[str], env_overrides: dict | None = None) -> tuple[int, str, str]:
+    """Run the CLI; returns (code, stdout, stderr). Errors must go to stderr so that
+    --json consumers always receive a clean JSON document on stdout."""
+    out = io.StringIO()
+    err = io.StringIO()
     saved = {}
     if env_overrides:
         for k, v in env_overrides.items():
             saved[k] = os.environ.get(k)
             os.environ[k] = v
-    with contextlib.redirect_stdout(buf):
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
         try:
             code = main(argv)
         finally:
@@ -33,7 +36,7 @@ def _run(argv: list[str], env_overrides: dict | None = None) -> tuple[int, str]:
                         os.environ.pop(k, None)
                     else:
                         os.environ[k] = v
-    return code, buf.getvalue()
+    return code, out.getvalue(), err.getvalue()
 
 
 class CliTest(unittest.TestCase):
@@ -109,15 +112,15 @@ class CliTest(unittest.TestCase):
         shutil.rmtree(self.tmp)
 
     def test_list_json(self):
-        code, out = _run(["list", "--all", "--json"])
+        code, out, _ = _run(["list", "--all", "--json"])
         self.assertEqual(code, 0)
         rows = json.loads(out)
         self.assertEqual(len(rows), 2)
-        providers = {r["providerId"] for r in rows}
+        providers = {r["agentId"] for r in rows}
         self.assertEqual(providers, {"cc", "codex"})
 
     def test_list_agent_positional(self):
-        code, out = _run(["list", "claude", "--all"])
+        code, out, _ = _run(["list", "claude", "--all"])
         self.assertEqual(code, 0)
         self.assertIn("cc:00000000", out)
         self.assertNotIn("codex:", out)
@@ -127,7 +130,7 @@ class CliTest(unittest.TestCase):
 
         old = cli_mod._stdout_isatty
         cli_mod._stdout_isatty = lambda: True  # TTY shows guidance
-        code, out = _run(["list"])
+        code, out, _ = _run(["list"])
         cli_mod._stdout_isatty = old
         self.assertEqual(code, 0)
         self.assertIn("cc:00000000", out)
@@ -136,7 +139,7 @@ class CliTest(unittest.TestCase):
 
     def test_list_pipe_output_is_clean(self):
         """Non-TTY (agent/pipe/chat): data only, no guidance lines."""
-        code, out = _run(["list"])
+        code, out, _ = _run(["list"])
         self.assertEqual(code, 0)
         self.assertNotIn("-> fork the most recent", out)
         self.assertNotIn("more:", out)
@@ -145,7 +148,7 @@ class CliTest(unittest.TestCase):
 
     def test_list_table_has_no_row_numbers(self):
         """Stable-column table: identifiers leftmost, no '1.' prefix (chat Markdown safety)."""
-        code, out = _run(["list"])
+        code, out, _ = _run(["list"])
         self.assertEqual(code, 0)
         self.assertNotIn("1. codex:", out)
         self.assertIn("Session", out)  # header without '#'
@@ -165,12 +168,12 @@ class CliTest(unittest.TestCase):
                 f'"text":"会话 {i}"}}]}},"cwd":"/tmp/limit-proj"}}\n',
                 encoding="utf-8",
             )
-        code, out = _run(["list", "claude"])
+        code, out, _ = _run(["list", "claude"])
         cli_mod._stdout_isatty = old
         self.assertEqual(code, 0)
         self.assertIn("26 sessions", out)
         self.assertIn("--all all", out)
-        code_all, out_all = _run(["list", "claude", "--all"])
+        code_all, out_all, _ = _run(["list", "claude", "--all"])
         self.assertEqual(code_all, 0)
         self.assertIn("aaaa0024", out_all)  # the 26th is visible
         self.assertNotIn("showing 20", out_all)
@@ -185,14 +188,14 @@ class CliTest(unittest.TestCase):
                 f'"text":"x {i}"}}]}},"cwd":"/tmp/limit2-proj"}}\n',
                 encoding="utf-8",
             )
-        code, out = _run(["list", "claude", "--limit", "3"])
+        code, out, _ = _run(["list", "claude", "--limit", "3"])
         self.assertEqual(code, 0)
         self.assertIn("6 sessions, showing 3", out)
         self.assertIn("bbbb0004", out)  # the 3 most recent
         self.assertNotIn("bbbb0000", out)  # the oldest is hidden
 
     def test_list_search(self):
-        code, out = _run(["list", "-s", "OAuth"])
+        code, out, _ = _run(["list", "-s", "OAuth"])
         self.assertEqual(code, 0)
         self.assertIn("cc:00000000", out)
         self.assertIn("codex:019e0000", out)
@@ -205,22 +208,22 @@ class CliTest(unittest.TestCase):
             '{"type":"queue-operation","operation":"add-context","sessionId":"e"}\n',
             encoding="utf-8",
         )
-        code, out = _run(["list", "claude"])
+        code, out, _ = _run(["list", "claude"])
         self.assertEqual(code, 0)
         self.assertNotIn("eeee0000", out)  # empty sessions hidden by default
         self.assertIn("hidden 1 empty sessions", out)
-        code_all, out_all = _run(["list", "claude", "--all"])
+        code_all, out_all, _ = _run(["list", "claude", "--all"])
         self.assertIn("eeee0000", out_all)  # --all shows them
 
     def test_fork_writes(self):
-        code, out = _run(["fork", "cc:00000000", "--into", "codex"])
+        code, out, _ = _run(["fork", "cc:00000000", "--into", "codex"])
         self.assertEqual(code, 0)
         self.assertIn("✓ forked  cc:00000000 → codex:", out)
         self.assertIn("codex resume 019e-fake-thread", out)
         self.assertEqual(len(out.strip().splitlines()), 2)
 
     def test_fork_json_uses_user_turns_and_messages(self):
-        code, out = _run(["fork", "cc:00000000", "--into", "codex", "--json"])
+        code, out, _ = _run(["fork", "cc:00000000", "--into", "codex", "--json"])
         self.assertEqual(code, 0)
         data = json.loads(out)
         self.assertEqual(data["user_turns"], 2)
@@ -228,28 +231,29 @@ class CliTest(unittest.TestCase):
         self.assertNotIn("turns", data)
 
     def test_fork_at_boundary(self):
-        code, out = _run(["fork", "cc:00000000", "--at", "1", "--into", "codex"])
+        code, out, _ = _run(["fork", "cc:00000000", "--at", "1", "--into", "codex"])
         self.assertEqual(code, 0)
         self.assertEqual(len(out.strip().splitlines()), 2)
         self.assertIn("@1", out)
 
     def test_fork_at_out_of_range(self):
-        code, out = _run(["fork", "cc:00000000", "--at", "99", "--into", "codex"])
+        code, out, err = _run(["fork", "cc:00000000", "--at", "99", "--into", "codex"])
         self.assertEqual(code, 1)
-        self.assertIn("Error", out)
-        self.assertIn("try", out)
+        self.assertIn("Error", err)
+        self.assertIn("try", err)
+        self.assertEqual(out, "")  # stdout stays data-only
 
     def test_fork_at_zero_rejected(self):
         """--at 0 must error like --at < 0, not silently fork the whole session."""
-        code, out = _run(["fork", "cc:00000000", "--at", "0", "--into", "codex"])
+        code, out, err = _run(["fork", "cc:00000000", "--at", "0", "--into", "codex"])
         self.assertEqual(code, 1)
-        self.assertIn("Invalid fork point", out)
+        self.assertIn("Invalid fork point", err)
 
     def test_fork_same_agent_rejected(self):
         """--into with the source agent must be rejected (cross-agent only)."""
-        code, out = _run(["fork", "cc:00000000", "--into", "cc"])
+        code, out, err = _run(["fork", "cc:00000000", "--into", "cc"])
         self.assertEqual(code, 1)
-        self.assertIn("different", out)
+        self.assertIn("different", err)
 
     def test_fork_default_source_deterministic(self):
         """No ref: current-cwd first, then most recent; never the target agent."""
@@ -258,7 +262,7 @@ class CliTest(unittest.TestCase):
         old = cli_mod._stdin_isatty
         cli_mod._stdin_isatty = lambda: False
         try:
-            code, out = _run(["fork", "--into", "codex"])
+            code, out, _ = _run(["fork", "--into", "codex"])
         finally:
             cli_mod._stdin_isatty = old
         self.assertEqual(code, 0)
@@ -280,7 +284,7 @@ class CliTest(unittest.TestCase):
 
     def test_fork_into_alias_excludes_canonical_agent(self):
         """--into claude must exclude agent_id "cc" from source candidates."""
-        code, out = _run(["fork", "--into", "claude"])
+        code, out, _ = _run(["fork", "--into", "claude"])
         self.assertEqual(code, 0)
         self.assertIn(
             "✓ forked  codex:019e0000 → cc:", out
@@ -294,7 +298,7 @@ class CliTest(unittest.TestCase):
         with mock.patch(
             "caf.adapters.claude.shutil.which", return_value="/usr/bin/claude"
         ):
-            code, out = _run(
+            code, out, _ = _run(
                 ["fork", "codex:019e0000", "--into", "claude"],
                 env_overrides={"CAF_CC_PROJECTS": str(Path(self.tmp) / "no-cc-store")},
             )
@@ -325,10 +329,10 @@ class CliTest(unittest.TestCase):
         self.assertEqual(target.agent_id, "wr")
 
     def test_fork_unknown_session(self):
-        code, out = _run(["fork", "cc:zzzz", "--into", "codex"])
+        code, out, err = _run(["fork", "cc:zzzz", "--into", "codex"])
         self.assertEqual(code, 1)
-        self.assertIn("Error", out)
-        self.assertIn("try", out)
+        self.assertIn("Error", err)
+        self.assertIn("try", err)
 
     def test_fork_unknown_cwd_is_rejected(self):
         projects = Path(os.environ["CAF_CC_PROJECTS"])
@@ -339,9 +343,9 @@ class CliTest(unittest.TestCase):
             '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"no cwd"}]}}\n',
             encoding="utf-8",
         )
-        code, out = _run(["fork", f"cc:{sid}", "--into", "codex"])
+        code, out, err = _run(["fork", f"cc:{sid}", "--into", "codex"])
         self.assertEqual(code, 1)
-        self.assertIn("working directory is unknown", out)
+        self.assertIn("working directory is unknown", err)
 
     def test_process_exit_code_nonzero_on_error(self):
         """The CLI process must exit non-zero on errors (not swallow main()'s return code)."""
@@ -355,7 +359,8 @@ class CliTest(unittest.TestCase):
             env=os.environ,
         )
         self.assertEqual(proc.returncode, 1)
-        self.assertIn("Error", proc.stdout)
+        self.assertIn("Error", proc.stderr)
+        self.assertEqual(proc.stdout, "")  # stdout stays data-only on errors
 
     def test_resolve_target_requires_into_non_tty(self):
         """Non-TTY fork with several target agents must fail loudly, never silently pick one."""
@@ -410,7 +415,7 @@ class CliTest(unittest.TestCase):
         self.assertEqual(CountingAdapter.calls, 1)
 
     def test_doctor_json(self):
-        code, out = _run(["doctor", "--json"])
+        code, out, _ = _run(["doctor", "--json"])
         self.assertEqual(code, 0)
         data = json.loads(out)
         agents = {a["agent"] for a in data["agents"]}

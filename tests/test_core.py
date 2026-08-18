@@ -137,10 +137,9 @@ class CoreTest(unittest.TestCase):
 
     def test_slice_through(self):
         turns = self._turns(5)
-        sliced, warning = slice_turns(turns, 3)
+        sliced = slice_turns(turns, 3)
         self.assertEqual(len(sliced), 6)  # u1..u3 + a1..a3
         self.assertEqual(sliced[-1].text, "a3")
-        self.assertIsNone(warning)
 
     def test_slice_incomplete_turn(self):
         """An unfinished turn must fail loudly, never silently move the fork point."""
@@ -169,10 +168,9 @@ class CoreTest(unittest.TestCase):
             Turn("user", "u2"),
             Turn("assistant", "a3"),
         ]
-        sliced, warning = slice_turns(turns, 1)
+        sliced = slice_turns(turns, 1)
         self.assertEqual([t.text for t in sliced], ["u1", "a1", "a2"])
-        self.assertIsNone(warning)
-        sliced2, _ = slice_turns(turns, 2)
+        sliced2 = slice_turns(turns, 2)
         self.assertEqual([t.text for t in sliced2], ["u1", "a1", "a2", "u2", "a3"])
 
     def test_slice_consecutive_users_rejects_unfinished_turn(self):

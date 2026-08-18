@@ -9,6 +9,10 @@ across agent boundaries: the target gets a new native resumable session built fr
 source conversation, working directory, and portable tool evidence. The source stays
 untouched.
 
+`caf` forks **session state, not workspace state**. It does not copy your workspace: the
+target resumes in the *same* working directory, so it sees the same local files, branch,
+and uncommitted changes that were already there.
+
 Currently supports Claude Code, Codex, and DeepSeek Harness.
 Tested on macOS / Linux.
 
@@ -118,7 +122,8 @@ markers. Session formats change; the last live verification was 2026-08-17.
 ## Limitations
 
 - Text turns and portable tool evidence are carried. Config, permissions, attachments,
-  hidden agent state, and git state are not.
+  and hidden agent state are not. Git/workspace state is not copied either — it does not
+  need to be: the target resumes in the same working directory.
 
 ## Contributing / adding an agent
 
