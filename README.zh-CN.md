@@ -2,10 +2,12 @@
 
 [English](README.md)
 
-**把 Coding Agent 的会话 fork 到另一个 Agent。**
+**把 Agent 的会话 fork 到另一个 Agent。**
 
 Claude Code 只能 fork 给 Claude Code，Codex 只能 fork 给 Codex。
 CAF 把同样的 fork 带到 Agent 边界之外。
+
+当前支持：Claude Code ↔ Codex CLI ↔ DeepSeek Harness。
 
 你在 Claude Code 里做到一半，想看看 Codex 会怎么继续。
 不用总结对话，不用复制粘贴上下文。Fork 它：
@@ -21,12 +23,10 @@ caf fork --into codex
 
 在 Codex 里继续。源会话保持不变。
 
-**Claude Code ↔ Codex CLI ↔ DeepSeek Harness**
-
 CAF fork 的是对话，不是你的文件系统。目标 Agent 在**同一个工作目录**里恢复——
 CAF 不复制 Git 或工作区状态，也不运行任何 daemon、数据库或后台服务。
 
-## 支持的 Agent
+## 当前支持的 Agent
 
 | Agent | Ref |
 |---|---|

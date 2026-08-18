@@ -2,10 +2,12 @@
 
 [简体中文](README.zh-CN.md)
 
-**Fork a coding-agent session into another agent.**
+**Fork an agent session into another agent.**
 
 Claude Code can fork into Claude Code. Codex can fork into Codex.
 CAF brings that same fork across agent boundaries.
+
+Currently: Claude Code ↔ Codex CLI ↔ DeepSeek Harness.
 
 You're halfway through a task in Claude Code and want to see how Codex would
 continue it. Don't summarize the conversation. Don't copy-paste the context.
@@ -22,13 +24,11 @@ caf fork --into codex
 
 Continue in Codex. The source session stays untouched.
 
-**Claude Code ↔ Codex CLI ↔ DeepSeek Harness**
-
 CAF forks the conversation, not your filesystem. The target agent resumes in the
 same working directory — CAF does not copy Git or workspace state, and it runs no
 daemon, database, or background service.
 
-## Supported agents
+## Currently supported agents
 
 | Agent | Ref |
 |---|---|
